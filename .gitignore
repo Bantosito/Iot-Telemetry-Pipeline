@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Environment
+.env
+
+# macOS
+.DS_Store
+
+# dbt (week 4)
+dbt_packages/
+target/
+logs/
