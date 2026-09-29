@@ -69,7 +69,8 @@ one:
 ```
 mosquitto_sub -t 'dead-letter' -v
 ```
-
+ 
+ 
 ## Publish your own messages by hand
 
 No need to go through the fake sensor at all — you're just publishing to a
