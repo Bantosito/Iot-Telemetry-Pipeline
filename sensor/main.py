@@ -116,7 +116,7 @@ def main() -> None:
             else:
                 payload = json.dumps(_valid_reading(temperature_c, humidity_pct))
 
-            client.publish(TOPIC, payload)
+            client.publish(TOPIC, payload, qos=1)
             log.info("published to %s: %s", TOPIC, payload)
 
             time.sleep(PUBLISH_INTERVAL_SECONDS)
@@ -127,4 +127,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    devceid = print("Select input")
     main()
