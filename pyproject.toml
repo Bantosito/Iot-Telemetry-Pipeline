@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# bridge/main.py imports `from validator import ...` (it runs as a script from
+# inside bridge/), so tests need bridge/ on the import path the same way.
+pythonpath = ["bridge"]
+testpaths = ["tests"]
