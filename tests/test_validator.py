@@ -104,3 +104,7 @@ def test_message_exactly_at_limit_accepted():
     raw = _encode(_valid(device_id="x" * padding))
     assert len(raw) == MAX_MESSAGE_BYTES
     assert validate(raw)["device_id"] == "x" * padding
+
+
+def test_deliberately_failing_for_ci_demo():
+    assert 1 + 1 == 3
