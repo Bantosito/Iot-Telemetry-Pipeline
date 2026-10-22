@@ -3,3 +3,7 @@
 # inside bridge/), so tests need bridge/ on the import path the same way.
 pythonpath = ["bridge"]
 testpaths = ["tests"]
+
+[tool.ruff.lint.isort]
+# validator lives in bridge/, not in site-packages - sort it as our own code.
+known-first-party = ["validator"]

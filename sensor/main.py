@@ -6,7 +6,7 @@ import logging
 import os
 import random
 import signal
-import time
+import threading
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
@@ -27,13 +27,15 @@ TOPIC = f"telemetry/{DEVICE_ID}"
 TEMP_MIN, TEMP_MAX = -40.0, 125.0
 HUMIDITY_MIN, HUMIDITY_MAX = 0.0, 100.0
 
-_shutdown = False
+# An Event instead of a plain bool so the wait between readings can be cut
+# short: time.sleep(30) ignores the stop signal until it finishes, and Docker
+# force-kills (exit code 137) a container that doesn't stop in time.
+_shutdown = threading.Event()
 
 
 def _handle_signal(signum, frame):
-    global _shutdown
-    log.info("received signal %s, shutting down after this cycle", signum)
-    _shutdown = True
+    log.info("received signal %s, shutting down", signum)
+    _shutdown.set()
 
 
 def _drift(value: float, low: float, high: float, step: float) -> float:
@@ -83,14 +85,14 @@ def _broken_reading(temperature_c: float, humidity_pct: float) -> str:
 
 def _connect_with_retry(client: mqtt.Client) -> None:
     delay = 1
-    while not _shutdown:
+    while not _shutdown.is_set():
         try:
             client.connect(MQTT_HOST, MQTT_PORT)
             log.info("connected to %s:%s", MQTT_HOST, MQTT_PORT)
             return
         except OSError as exc:
             log.warning("connect failed (%s), retrying in %ss", exc, delay)
-            time.sleep(delay)
+            _shutdown.wait(delay)
             delay = min(delay * 2, 30)
 
 
@@ -107,7 +109,7 @@ def main() -> None:
     humidity_pct = 45.0
 
     try:
-        while not _shutdown:
+        while not _shutdown.is_set():
             temperature_c = _drift(temperature_c, TEMP_MIN, TEMP_MAX, 0.3)
             humidity_pct = _drift(humidity_pct, HUMIDITY_MIN, HUMIDITY_MAX, 0.5)
 
@@ -119,7 +121,8 @@ def main() -> None:
             client.publish(TOPIC, payload, qos=1)
             log.info("published to %s: %s", TOPIC, payload)
 
-            time.sleep(PUBLISH_INTERVAL_SECONDS)
+            # Returns early the moment a stop signal sets the event.
+            _shutdown.wait(PUBLISH_INTERVAL_SECONDS)
     finally:
         client.loop_stop()
         client.disconnect()

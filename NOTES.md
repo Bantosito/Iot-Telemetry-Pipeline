@@ -199,3 +199,299 @@ We are just testing functions, testing of a mqtt would require broker/networking
 Parametrised test allows to run same test with differemt parameters testing all edge and specific input-output cases for a certain test. It is useful for the validator test as we can test diffrrent sent temperatures or various messasgee types and whether rejection they return is correct.
 
 What I'd do differently:
+
+## Step 1.6 — Docker Compose
+Date: 10.10.2026
+
+What I built:
+- `sensor/Dockerfile` and `bridge/Dockeerfile`: recipes that package each program into an image.
+- `docker-compose.yml`: starts broker, sensor and bridge together with one command.
+- A fix in `sensor/main.py` so the sensor stops cleanly when Docker asks it to (found while testing, details below).
+- `pyproject.toml`: a small ruff setting so the linter knows `validator` is my own code.
+
+### Docker from zero: the four words you need
+
+- **Image**: a frozen package containing an operating system base, Python, my libraries and my code. Built once, never changes. Like a class in Python, or an installer.
+- **Container**: a running copy of an image. It has its own filesystem, processes and network address, isolated from my laptop. Like an object created from a class: you can run many containers from one image, and stop or delete them without touching the image.
+- **Dockerfile**: the recipe for building an image, read top to bottom.
+- **Docker Compose**: a file (`docker-compose.yml`) describing *several* containers that belong together, plus one command that starts them all on a shared private network.
+
+Why bother? "It works on my machine" goes away. The image contains the exact Python version and libraries, so it runs the same on my laptop, on GitHub's CI (step 1.7), or on a Raspberry Pi later. And instead of three terminal tabs (the playground setup), it's one command.
+
+Docker Desktop is the app that runs the Docker *engine* (the "daemon") in the background. The `docker` commands are just a remote control for that engine. If Docker Desktop isn't running, every command fails with "daemon not running". That was the first thing I hit.
+
+### The Dockerfile, line by line (the sensor and bridge files are almost identical)
+
+```dockerfile
+FROM python:3.12-slim
+```
+Start from the official Python 3.12 image, "slim" variant: a minimal Debian Linux with Python, about 150 MB instead of about 1 GB for the full one. Smaller means faster to build and download, and less software in it that could have security holes.
+
+```dockerfile
+ENV PYTHONUNBUFFERED=1
+```
+Normally Python collects printed or logged output in a buffer and writes it out in chunks. In a container that means logs appear late, or are lost if the container is killed. This setting makes every log line appear immediately in `docker compose logs`.
+
+```dockerfile
+WORKDIR /app
+```
+"cd into /app inside the image, creating it if needed." Everything after this happens there.
+
+```dockerfile
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY main.py validator.py ./
+```
+Copy the requirements in, install them, *then* copy the code. The order matters because **Docker caches each step (layer)**. If a step's input hasn't changed, Docker reuses the saved result. Code changes often, requirements rarely, so with this order editing `main.py` only re-runs the last COPY, and the slow `pip install` is reused from cache. If the code were copied first, every code edit would reinstall all libraries.
+`--no-cache-dir` stops pip keeping a download cache inside the image. It would never be used again, so it just wastes space.
+The sensor copies only `main.py`. The bridge also needs `validator.py`.
+
+```dockerfile
+RUN useradd --create-home --uid 10001 app
+USER app
+```
+Create an ordinary user called `app` and switch to it. By default, containers run as **root** (all-powerful). If someone ever exploited a bug in my code, they'd be root inside the container, which makes escaping the container or doing damage easier. As `app` they can't install software or modify the system. My code doesn't need any of those powers, so it shouldn't have them (the principle of least privilege again, as in step 3.1). Verified with `docker compose exec bridge id`, which printed `uid=10001(app)`.
+
+```dockerfile
+CMD ["python", "main.py"]
+```
+The command the container runs when it starts. Written as a list (the "exec form") so Python runs as the container's main process (PID 1) and **receives stop signals directly**. With the plain-string form, a shell would sit in between and might not pass the signal on.
+
+### docker-compose.yml, piece by piece
+
+```yaml
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+```
+The broker uses a ready-made official image. Nothing to build. `:2` means "latest 2.x version".
+
+```yaml
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+```
+A **volume** (here a "bind mount") makes a file from my laptop appear inside the container. My existing config from step 1.2 is mounted where Mosquitto looks for its config. `:ro` = read-only: the container can read it but not change it.
+
+```yaml
+    ports:
+      - "1883:1883"
+```
+**Port publishing**: "laptop port 1883 → container port 1883." The sensor and bridge don't need this; they talk to the broker over Compose's private network. It's only there so `mosquitto_sub -t '#' -v` on my laptop can still watch the traffic.
+
+```yaml
+    restart: unless-stopped
+```
+If the program crashes or Docker restarts, start the container again automatically, unless I stopped it on purpose.
+
+```yaml
+  sensor:
+    build: ./sensor
+```
+Instead of a ready-made image, build one from the Dockerfile in `./sensor`.
+
+```yaml
+    env_file:
+      - path: .env
+        required: false
+```
+Load settings from `.env` if it exists. `required: false` because a clean checkout from GitHub has no `.env` (it's gitignored), and the README's "done when" requires that to work. The code's built-in defaults take over.
+
+```yaml
+    environment:
+      MQTT_HOST: mosquitto
+```
+**The most important line.** In the playground, sensor and bridge used `localhost`. Inside a container, `localhost` means *that container itself*, and there's no broker in the sensor's container. Compose puts all services on a private network with a built-in DNS (name lookup), where **each service is reachable by its name**. So the broker is at `mosquitto`. This setting overrides whatever `.env` says.
+
+```yaml
+    depends_on:
+      - mosquitto
+```
+Start the broker container *before* this one. It only guarantees start **order**, not that Mosquitto is actually ready to accept connections yet. That's fine, because both scripts already retry connecting (step 1.3/1.4 work paying off).
+
+### Every command I ran, and why
+
+**1. Check Docker is installed and running**
+```
+docker --version; docker compose version; docker info
+```
+The first two print versions. `docker info` asks the engine for its status: it fails if Docker Desktop isn't running. That was the case at first, so you started Docker Desktop.
+
+**2. Check the Compose file before running anything**
+```
+docker compose config --quiet
+```
+Reads `docker-compose.yml` and checks it's valid without starting anything. `--quiet` = print nothing if it's fine.
+
+**3. Build and start everything**
+```
+docker compose up --build -d
+```
+- `up`: create the network and containers and start them.
+- `--build`: (re)build my images from the Dockerfiles first.
+- `-d`: "detached", run in the background and give the terminal back. Without `-d`, logs stream in the terminal and Ctrl+C stops everything. That's nicer when you're running it yourself.
+
+**First attempt failed:** `bind: address already in use` on port 1883. Something was already on that port. Investigated with:
+```
+lsof -nP -iTCP:1883 -sTCP:LISTEN 
+```
+`lsof` = "list open files". On macOS, network connections count as files. This shows which process is listening on TCP port 1883 (`-nP` = show numbers, not names, which is faster). The answer: my own playground broker (`mosquitto -c config/mosquitto.conf -v`), left running in a terminal tab since 6 October. Only one program can listen on a port at a time. **Lesson: run either the playground setup or Compose, never both.** After stopping the old broker, `docker compose up -d` worked.
+
+**4. See what's running**
+```
+docker compose ps
+docker compose logs sensor bridge
+docker compose logs -f bridge          # -f = keep following live, Ctrl+C to stop watching
+docker compose exec bridge id          # run a command inside a running container
+```
+`exec bridge id` printed `uid=10001(app)`: proof the bridge isn't running as root.
+
+**5. Restart tests (the README's "recovers if you restart any single container")**
+```
+docker compose restart mosquitto
+docker compose restart bridge
+docker compose restart sensor
+```
+I timed each restart and read the logs afterwards.
+- Broker restarted → the bridge logged `connected to mosquitto:1883` again about 10s later and kept forwarding. That's `reconnect_delay_set()` plus subscribing inside `_on_connect` doing their job, the exact thing 1.4 Q4 was about.
+- Bridge restarted → it logged `received signal 15`, `disconnected, exiting`, then reconnected. Signal 15 = SIGTERM = "please stop", which is what Docker sends first.
+- Sensor restarted → came back and kept publishing, **but** it never logged `disconnected, exiting`. Suspicious.
+
+**6. Investigating the sensor**
+```
+docker compose stop sensor
+docker inspect -f '{{.State.ExitCode}}' project-sensor-1
+```
+`docker inspect` shows everything Docker knows about a container. `-f` picks out one field. The exit code was **137**.
+
+How to read exit codes: 0 = finished normally. **128 + N = killed by signal N.** 137 − 128 = 9 = **SIGKILL**, the "pull the plug" signal a program can't catch or clean up after.
+
+### The bug: why Docker had to force-kill the sensor
+
+How `docker stop` works: send SIGTERM ("please stop"), wait a grace period, and if the process is still running, send SIGKILL.
+
+The sensor's loop was:
+```python
+while not _shutdown:
+    ...publish...
+    time.sleep(30)
+```
+The signal handler *did* run and set `_shutdown = True` (the log showed `received signal 15`). But Python then **goes back to sleeping for the rest of the 30 seconds**. Since Python 3.5, `time.sleep()` resumes after a signal handler instead of returning early (PEP 475). So the loop only noticed `_shutdown` after up to 30 seconds. Docker's grace period ran out first, and it pulled the plug. The `finally:` block (loop_stop, disconnect, "disconnected, exiting") never ran.
+
+The bridge didn't have this problem because its loop sleeps only 1 second at a time.
+
+Why it matters: a killed process doesn't disconnect cleanly, so the broker doesn't know it's gone until keep-alive times out. In real systems, a killed process can also lose half-written work. Every container stop or restart was ending in a forced kill.
+
+Open question I noticed: Docker gave up after about 3 seconds, not the 10 seconds I expected as the default grace period. Worth checking why (Docker Desktop or Compose version settings?). It doesn't change the bug: even 10 seconds is shorter than a 30-second sleep.
+
+### The fix
+
+```python
+_shutdown = threading.Event()
+
+def _handle_signal(signum, frame):
+    log.info("received signal %s, shutting down", signum)
+    _shutdown.set()
+
+while not _shutdown.is_set():
+    ...publish...
+    _shutdown.wait(PUBLISH_INTERVAL_SECONDS)
+```
+A `threading.Event` is a flag that something can *wait on*. `_shutdown.wait(30)` means "wait up to 30 seconds, **but return immediately if the flag gets set**." So it acts like `sleep(30)`, except a stop signal cuts it short. The connect-retry loop uses the same `wait()` instead of `time.sleep()`, so the sensor also stops promptly while it's still trying to reach the broker. `import time` was no longer used, so it was removed.
+
+Re-tested after rebuilding (`docker compose up -d --build sensor`, which rebuilds and replaces only the sensor):
+`stop took 1s, exit code 0`, and the log shows `received signal 15, shutting down` → `disconnected, exiting`. Clean.
+
+### Lint fix (ruff)
+
+```
+ruff check sensor bridge tests
+```
+Ruff is the linter that CI will run in step 1.7. It found two things:
+1. `import time` unused in the sensor, a leftover from the fix. Removed.
+2. "Import block is un-sorted" in `bridge/main.py` and the tests. Ruff groups imports as standard library → third-party → my own code. It didn't know `validator` is my own module (it lives in `bridge/`, not an installed library), so it wanted it grouped with paho and dotenv. Fixed by telling it in `pyproject.toml`:
+```toml
+[tool.ruff.lint.isort]
+known-first-party = ["validator"]
+```
+After that: `All checks passed!` and `32 passed` for the tests.
+
+### Final checks (all passed)
+- No `.env` file exists, so this *was* the clean-checkout scenario.
+- All three containers up. The bridge restarts with exit code 0 and reconnects. A fresh sensor reading was `forwarded` within a second of restarting.
+
+### How to run it myself
+```
+docker compose up --build          # everything, logs in this terminal, Ctrl+C stops all
+docker compose up --build -d       # same, in the background
+docker compose logs -f             # follow all logs (or: logs -f bridge)
+docker compose restart sensor      # restart one service
+docker compose down                # stop and remove containers + network (images stay)
+mosquitto_sub -t '#' -v            # still works from the laptop, thanks to the published port
+```
+To change settings: `cp .env.example .env` and edit `.env`, e.g. `PUBLISH_INTERVAL_SECONDS=2` and `BROKEN_MESSAGE_PROBABILITY=0.3`, then `docker compose up -d` (Compose recreates the containers whose settings changed). Don't change `MQTT_HOST` there for Docker; Compose overrides it to `mosquitto` anyway.
+
+Still open: the leftover `devceid = print("Select input")` at the bottom of `sensor/main.py` prints "Select input" in the sensor's container logs on every start. Decide whether to keep or remove it.
+
+What surprised me / what broke:
+
+Answers to the questions (in my own words):
+
+1. Why can the bridge reach the broker at `mosquitto` instead of `localhost`?
+The Bridge can reach mqtt in localhost at mosquitto because container has its own internal network and dns server that allows reaching services through their name so there is no need to call ip adress (localhost when done locally)
+
+2. What's the difference between an image and a container?
+An image is a package containing operating systems, software like python, Mqtt broker, and all the code, settings etc.. ready to be cloned and run as a container. It offers an unified way to store code and all dependecies needed to deply it seamlesly in any enviroment.
+
+3. Why not run as root inside a container?
+
+Running as a root in a container poses a risk to the container or even a system in case the code is expoited. According to the least privelage principle. The app doesn't require root privealge to run therefore it shouldn't have it. 
+
+4. What does `depends_on` guarantee, and what doesn't it?
+Depends on guarantees that service that other services depends on will be turned on first (mosquitto broker in our example). What it does not provide is assurring that dependand (ex. mosquito broker) will be fully running and the depending services will connect succesfully to it. 
+
+What I'd do differently:
+
+Notes: 
+RUN useradd --create-home --uid 10001 app ~ where are we creating this user? Why?
+
+What is yaml? /
+
+Are we going to have te change docker enviroment / networking later on when we will be connecting to a real device in our local network and further out to azure?
+
+### Answers to my notes (from Claude, 22.10.2026)
+
+**Where are we creating the `app` user, and why?**
+*Inside the image*, while it's being built. `RUN` executes a command in the image under construction, so `useradd` adds a line to the image's own `/etc/passwd` (Linux's list of users). The user does **not** exist on my Mac. It lives only inside the container, the same way a `pip install` in the Dockerfile doesn't install anything on my laptop.
+- `--create-home` gives it a home folder (`/home/app`). Some tools expect one and fail without it.
+- `--uid 10001`: Linux identifies users by number, not name. A high number avoids colliding with system users that already exist in the base image (0 = root, 1–999 = system accounts).
+- `USER app` then switches every later step, and the running program, to that user.
+- Why: by default a container runs as root. If my code were ever exploited, the attacker would be root inside the container, which makes escaping it or doing damage much easier. My scripts only need to read their own files and open network connections, so they get no more power than that (least privilege).
+- Proof it worked: `docker compose exec bridge id` → `uid=10001(app)`.
+
+**What is YAML?**
+A text format for writing structured data (settings), designed to be easy for humans to read. It does the same job as JSON, which we already use for the messages, but without the braces and quotes:
+```yaml
+services:            # a key whose value is a nested block
+  sensor:
+    build: ./sensor  # key: value
+    depends_on:
+      - mosquitto    # "-" starts a list item
+```
+The same in JSON would be `{"services": {"sensor": {"build": "./sensor", "depends_on": ["mosquitto"]}}}`.
+- **Indentation is the structure.** What's nested inside what is decided purely by how far a line is indented. Use spaces, never tabs. A wrong indent is the #1 YAML bug.
+- `#` starts a comment (JSON can't have comments, which is one reason config files prefer YAML).
+- It's everywhere in DevOps: Docker Compose, **GitHub Actions (step 1.7 is written in YAML)**, Kubernetes, dbt (week 4).
+
+**Will Docker / networking need to change for the real ESP32 and for Azure?**
+Two different directions, two different answers:
+
+*1. ESP32 on the home network: yes, the broker must become reachable, but securely.*
+- The ESP32 is a separate device on the Wi-Fi, outside the Compose network, so it can't use the name `mosquitto`. It will connect to the laptop's Wi-Fi IP address on port 1883.
+- The published port was `"1883:1883"`, which (I found out while answering this) already exposed the broker to the **whole Wi-Fi** with anonymous access on. Changed to `"127.0.0.1:1883:1883"` (laptop only) until it's actually needed. Verified with `docker compose port mosquitto 1883` → `127.0.0.1:1883`.
+- When the ESP32 arrives, do it in this order: (1) turn off anonymous access and give Mosquitto username/password logins (one per device, so a device's identity is tied to its login, not just the self-declared `device_id`), (2) only then open the port to the network again. Optionally (3) TLS (port 8883) so the Wi-Fi traffic is encrypted.
+- Also: the laptop's Wi-Fi IP can change. A fixed IP (DHCP reservation on the router) or a hostname fixes that.
+
+*2. Bridge → Azure: almost no networking change.*
+- Inbound vs outbound is the key idea. The ESP32 case is **inbound** (something outside connecting *in* to the laptop, which needs an open port). Azure is **outbound**: the bridge connects *out* to IoT Hub over the internet, like a browser opening a website. Containers can make outbound connections by default, and the home router allows outgoing traffic, so no ports need opening.
+- What changes is configuration and code, not networking: the IoT Hub connection string (a secret) goes into `.env`, which Compose already passes in via `env_file`, and `forward()` in `bridge/main.py` gets an IoT Hub destination (step 2.2).
+- The connection to Azure is encrypted (TLS) and authenticated by the device credentials. That's why it's safe to go over the internet when the local broker isn't.

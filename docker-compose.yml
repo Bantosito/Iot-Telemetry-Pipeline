@@ -1,0 +1,40 @@
+# The whole home half: broker, fake sensor, bridge.
+#   docker compose up --build      start everything (Ctrl+C to stop)
+#   docker compose logs -f bridge  follow one service's logs
+#   docker compose restart sensor  restart a single container
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      # Published so mosquitto_sub/pub on the laptop can watch the traffic.
+      # 127.0.0.1 = this laptop only. Plain "1883:1883" would open it to every
+      # device on the Wi-Fi, which anonymous access (mosquitto.conf) must never be.
+      - "127.0.0.1:1883:1883"
+    restart: unless-stopped
+
+  sensor:
+    build: ./sensor
+    env_file:
+      - path: .env
+        required: false # a clean checkout has no .env; the code has defaults
+    environment:
+      # Inside the Compose network the broker is reached by service name, not
+      # localhost (localhost in a container means that container itself).
+      MQTT_HOST: mosquitto
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+  bridge:
+    build: ./bridge
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MQTT_HOST: mosquitto
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
