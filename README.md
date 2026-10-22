@@ -1,5 +1,7 @@
 # IoT telemetry pipeline — build guide
 
+[![CI](https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course/actions/workflows/ci.yml/badge.svg)](https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course/actions/workflows/ci.yml)
+
 A sensor at home streams readings into Azure, where they're stored, modelled and shown in a report. The cloud side is defined in code and deployed automatically.
 
 This file is the plan. **It contains no code on purpose.** Each step tells you what the piece is, why it exists, what to build, how you know it's done, and questions you should be able to answer afterwards.

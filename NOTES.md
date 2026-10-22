@@ -600,3 +600,181 @@ Everything committed, in every version: all commit messages, dates and author na
 - **Message = what now works, not what I typed.** Summary line under about 70 characters, e.g. `Run the home half with Docker Compose (step 1.6)`. Then an empty line, then a body explaining *why* if it isn't obvious.
 - **Commit at the end of each step** (README rule), so the history reads like the build guide.
 - `git status` before every commit; never commit `.env`.
+
+## Step 1.7 — CI (GitHub Actions)
+Date: 22.10.2026
+
+What I built:
+- `.github/workflows/ci.yml`: the instructions GitHub follows on every push.
+- The project is now on GitHub: https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course
+- A CI status badge at the top of `README.md`.
+
+### CI from zero
+
+**The problem CI solves.** Until now, checking the code meant *me* remembering to run `pytest` and `ruff` on *my* laptop before pushing. People forget. And "it passed on my laptop" can hide problems that only exist because of something on my laptop (a library I installed by hand, a file I never committed).
+
+**CI = continuous integration**: every change gets checked automatically, the moment it's pushed. On every `git push`, GitHub:
+1. starts a brand-new, empty Linux computer (a "runner") for a few minutes, free for public repos;
+2. downloads my code onto it;
+3. runs the steps listed in my workflow file: install, lint, test, build;
+4. shows the result: **green ✓** if every step passed, **red ✗** if any failed. It shows next to the commit, in the **Actions** tab, and in the README badge.
+
+Afterwards the runner is thrown away. Every run starts from scratch, so a pass really means "works on a clean machine", not "works on my laptop".
+
+**Words:**
+| Word | Meaning |
+|---|---|
+| GitHub Actions | GitHub's built-in CI system: the robot that runs the workflow |
+| workflow | one YAML file in `.github/workflows/` describing *when* to run and *what* to run |
+| trigger (`on:`) | the event that starts it: a push, a pull request, a schedule... |
+| job | a group of steps that runs on its own runner (own fresh computer) |
+| step | one command, or one ready-made "action", inside a job |
+| action (`uses:`) | a reusable step someone else wrote, e.g. "download the repo" |
+| runner | the temporary computer the job runs on (`ubuntu-latest` = Linux) |
+| run | one execution of the workflow, e.g. "the run for commit 15a6ed1" |
+
+### The workflow file, line by line
+
+```yaml
+name: CI
+```
+The name shown in the Actions tab and on the badge.
+
+```yaml
+on:
+  push:
+  pull_request:
+```
+**The trigger.** Run on every push to any branch, and on every pull request (someone proposing changes, e.g. from a fork), so their code is checked before I accept it.
+
+```yaml
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+```
+The first job, named `lint-and-test`, on a fresh Ubuntu Linux computer.
+
+```yaml
+    steps:
+      - uses: actions/checkout@v4
+```
+The runner starts empty, without even my code. This ready-made action does `git clone` of my repo onto it. `@v4` pins the action's version, so an update by its authors can't silently change my CI.
+
+```yaml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+```
+Installs Python 3.12, the same version as my laptop and the Docker images. `cache: pip` saves downloaded libraries between runs (keyed on `requirements-dev.txt`), so later runs skip re-downloading them unless that file changes.
+
+```yaml
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+```
+`run:` = a normal terminal command, exactly what I'd type myself. Installs pytest, ruff, paho-mqtt and dotenv at the pinned versions.
+
+```yaml
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Test (pytest)
+        run: pytest -v
+```
+The actual checks, the same commands I run locally. If a command fails (exit code not 0, same idea as exit code 137 in 1.6), the step turns red, the remaining steps are skipped, and the run fails.
+
+```yaml
+  build-images:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images
+        run: docker compose build
+```
+A second job, on its own fresh computer. `needs: lint-and-test` means it only starts if the first job passed: no point building images from code that fails its checks. It builds both Docker images with the real Dockerfiles. Tests can't catch a broken Dockerfile, a file missing from a `COPY`, or a library that won't install on Linux, but a build can.
+
+### What ruff is
+
+**Ruff is a linter**: a tool that reads code *without running it* and flags likely mistakes and messy style. (Tests run the code; a linter only reads it.) Examples of what it catches:
+- unused imports, e.g. the leftover `import time` in 1.6;
+- variables that are used but never defined (a typo in a name), which would only crash at runtime otherwise;
+- imports in a messy order (it wants: standard library → installed libraries → my own code).
+
+It's very fast (written in Rust) and configured in `pyproject.toml`. Locally:
+```
+ruff check .          # list problems
+ruff check . --fix    # fix the ones it safely can, automatically
+```
+In CI it guarantees nobody (including me in week 4) pushes code with these problems unnoticed.
+
+### What I did, step by step, and why
+
+The README's "done when" has three parts. Each one was proven on GitHub, not assumed.
+
+**1. Pushed the project to GitHub (it was only on my laptop before).**
+```
+git remote add origin https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course.git
+git push -u origin main
+```
+The push itself started the first CI run, because the workflow file was in the pushed commits.
+
+**2. "A push turns green".** Checked the result. Without the GitHub CLI, I asked GitHub's public API directly:
+```
+curl -s "https://api.github.com/repos/Bantosito/Iot-Telemtr-Pipeline-Course/actions/runs?per_page=1" | grep -E '"(status|conclusion)"'
+```
+- `curl -s URL` fetches a web address and prints the reply (`-s` = silent, no progress bar). The reply is JSON describing the latest run (`per_page=1`).
+- `| grep -E '...'` keeps only the lines containing `"status"` or `"conclusion"`.
+- Result: `completed` / `success`. ✅
+
+(My first attempt was a long, unreadable polling script. It broke while parsing the reply, so I replaced it with this short one. Easier: `gh run list` / `gh run watch` after `brew install gh` + `gh auth login`, or just the **Actions** tab in the browser.)
+
+**3. "A push with a failing test turns red".** A CI that's always green proves nothing (same idea as breaking the validator on purpose in 1.5). So I added an obviously fake test to the end of `tests/test_validator.py`:
+```python
+def test_deliberately_failing_for_ci_demo():
+    assert 1 + 1 == 3
+```
+```
+git commit -am "Deliberately failing test to check CI turns red"   # -a = stage all changed tracked files, -m = message
+git push
+```
+Result: **failure**. Then I checked which step failed, using the run's ID:
+```
+curl -s ".../actions/runs/39856424297/jobs" | grep -E '"(name|conclusion)"'
+```
+- checkout, setup-python, install and **Lint (ruff)**: success;
+- **Test (pytest): failure**. Exactly the step that should fail, for the reason it should;
+- **build-images: skipped**, because of `needs: lint-and-test`. Proof that the dependency between jobs works.
+
+**4. Undid the fake test, the safe way.**
+```
+git revert --no-edit HEAD
+git push
+```
+- `git revert HEAD` makes a **new** commit that undoes the latest one (`HEAD`). `--no-edit` = accept the default message ("Revert ...").
+- Why not delete the commit? It was already pushed. Rewriting pushed history causes trouble (see my git notes); revert adds instead of erasing. Both commits stay visible in the history, which is fine: it shows I tested my CI on purpose.
+- Result: **success** again. ✅
+
+**5. "The README shows the status badge".** Added under the README title:
+```markdown
+[![CI](https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course/actions/workflows/ci.yml/badge.svg)](https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course/actions/workflows/ci.yml)
+```
+`badge.svg` is an image GitHub regenerates after every run: green "passing" or red "failing". Clicking it opens the workflow's run list. ✅
+
+### How to check CI myself
+- **Browser:** repo page → **Actions** tab → click a run → click a job → expand a step to see its full terminal output (e.g. pytest's failure message).
+- **The commit list:** a ✓ or ✗ next to each commit.
+- **Terminal (after installing `gh`):** `gh run list`, `gh run watch`, `gh run view --log-failed`.
+
+### What comes later with GitHub Actions
+In step 3.2 the same system will **deploy** to Azure: on push to `main`, validate Bicep, deploy it, deploy the Function code. It will log in to Azure with OIDC instead of a stored password. CI checks the code; that will be CD (continuous *deployment*).
+
+What surprised me / what broke:
+
+Answers to the questions (in my own words):
+
+1. What triggers your workflow?
+
+2. Why also build the images in CI, not only run tests?
+
+What I'd do differently:
