@@ -497,3 +497,106 @@ Two different directions, two different answers:
 - Inbound vs outbound is the key idea. The ESP32 case is **inbound** (something outside connecting *in* to the laptop, which needs an open port). Azure is **outbound**: the bridge connects *out* to IoT Hub over the internet, like a browser opening a website. Containers can make outbound connections by default, and the home router allows outgoing traffic, so no ports need opening.
 - What changes is configuration and code, not networking: the IoT Hub connection string (a secret) goes into `.env`, which Compose already passes in via `env_file`, and `forward()` in `bridge/main.py` gets an IoT Hub destination (step 2.2).
 - The connection to Azure is encrypted (TLS) and authenticated by the device credentials. That's why it's safe to go over the internet when the local broker isn't.
+
+## Git and GitHub: explanation + terminal guide
+Date: 22.10.2026 (written by Claude at my request, before pushing to GitHub for step 1.7)
+
+### What git is
+
+**Git is a time machine for a folder.** Every time I *commit*, git saves a snapshot of all tracked files, plus a message saying what changed and why, who made it, and when. I can look at any old snapshot, see exactly what changed between two of them, and undo mistakes.
+
+It all lives in the hidden `.git` folder inside the project. Delete that folder and the history is gone; the files stay as they are now. `ls -a` shows it.
+
+**Git and GitHub are not the same thing.**
+- **Git** is the program on my laptop that keeps the history. It works fully offline.
+- **GitHub** is a website that hosts a *copy* of the repository: a backup, a public portfolio, and a place where robots run things on my code (CI, step 1.7).
+- The two are synced by hand: `git push` uploads my new commits, `git pull` downloads commits made elsewhere.
+
+### The three places a change lives
+
+```
+ working folder  ──git add──►  staging area  ──git commit──►  local history  ──git push──►  GitHub
+ (files I edit)                (what goes into                (.git folder)                 (origin)
+                                the next commit)
+```
+1. **Working folder**: the files as I see them in VS Code. Editing changes only this.
+2. **Staging area** (also called "the index"): a waiting room for the next commit. `git add` puts changes there. It exists so one commit can contain only *some* of my changes. That's how 1.6's code and the cleanups became separate commits.
+3. **Local history**: `git commit` turns everything staged into a permanent snapshot.
+4. **GitHub**: only gets commits when I `git push`.
+
+### Key words
+
+| Word | Meaning |
+|---|---|
+| repository (repo) | a project folder tracked by git, i.e. one with a `.git` inside |
+| commit | one saved snapshot, with a message and a unique ID like `76b12e1` |
+| branch | a named line of commits. Mine is `main`. Branches let you try something without touching `main` |
+| remote | another copy of the repo somewhere else. `origin` = the standard name for the GitHub copy |
+| push / pull | upload my commits to the remote / download theirs |
+| clone | download a whole repo from GitHub to a new folder (what a "clean checkout" means) |
+| `.gitignore` | list of files git should never track: `.env`, `.venv/`, `__pycache__/`... |
+| HEAD | "where I am right now": usually the latest commit on my current branch |
+
+### Everyday terminal workflow (90% of what I'll use)
+
+```
+git status                     # what changed? what's staged? ALWAYS run this first
+git diff                       # exact line-by-line changes not yet staged
+git add NOTES.md sensor/main.py   # stage specific files
+git add .                      # stage everything changed (check git status first!)
+git diff --staged              # review exactly what will be committed
+git commit -m "Short summary of what now works"
+git push                       # send new commits to GitHub
+```
+`git status` is safe and shows everything. Running it before and after each step is the habit that prevents mistakes like committing `.env`.
+
+### Looking at history
+
+```
+git log --oneline              # one line per commit, newest first
+git log --oneline -5           # just the last 5
+git show 76b12e1               # what exactly changed in one commit
+git log -p NOTES.md            # full history of one file, with changes
+git blame sensor/main.py       # which commit last changed each line
+```
+
+### Undoing things (from safest to most dangerous)
+
+```
+git restore NOTES.md           # throw away my UNSTAGED edits to a file (gone for good!)
+git restore --staged NOTES.md  # unstage a file, but keep my edits
+git checkout bridge/validator.py   # older way to throw away edits; I used this in 1.5 to undo the deliberate break
+git commit --amend             # fix the LAST commit's message or add a forgotten file (only before pushing!)
+git revert 76b12e1             # make a NEW commit that undoes an old one: the safe way once pushed
+```
+Rule: **never rewrite commits that are already pushed** (`--amend`, `reset`, `rebase`), because GitHub and anyone who cloned it would disagree with my history. Once pushed, undo with `git revert`, which adds a new commit instead of erasing an old one.
+
+And from 1.1: **a committed secret stays in the history forever**, even if a later commit deletes the file. If it ever happens, the fix is to change the secret, not to delete the file.
+
+### Connecting to GitHub for the first time (step 1.7)
+
+1. On github.com: **New repository**, Public, and **empty** (no README/.gitignore/license, or the first push conflicts with my local history).
+2. Log in once from the terminal. Easiest is the GitHub CLI:
+   ```
+   brew install gh
+   gh auth login                # choose GitHub.com → HTTPS → log in with browser
+   ```
+   GitHub no longer accepts my account password for `git push`. The alternatives are a personal access token or an SSH key.
+3. Connect and upload:
+   ```
+   git remote add origin https://github.com/<me>/<repo>.git   # save the address as "origin"
+   git remote -v                                              # check it
+   git push -u origin main                                    # first push; -u remembers the link
+   ```
+4. From then on, after each commit, just `git push`.
+
+### What becomes public when I push
+
+Everything committed, in every version: all commit messages, dates and author name. My author email is already GitHub's private noreply address (`git config user.email` to check). NOT published: uncommitted changes, anything in `.gitignore` (`.env`, `.venv/`), and branches I don't push.
+
+### Good commit habits (the history is part of the portfolio)
+
+- **One logical change per commit**: "add tests" and "fix sensor shutdown" are separate commits when possible.
+- **Message = what now works, not what I typed.** Summary line under about 70 characters, e.g. `Run the home half with Docker Compose (step 1.6)`. Then an empty line, then a body explaining *why* if it isn't obvious.
+- **Commit at the end of each step** (README rule), so the history reads like the build guide.
+- `git status` before every commit; never commit `.env`.
