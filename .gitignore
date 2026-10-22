@@ -15,3 +15,6 @@ __pycache__/
 dbt_packages/
 target/
 logs/
+
+# Claude Code personal settings (machine-specific)
+.claude/settings.local.json

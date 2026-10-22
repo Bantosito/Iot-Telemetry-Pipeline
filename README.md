@@ -2,7 +2,9 @@
 
 A sensor at home streams readings into Azure, where they're stored, modelled and shown in a report. The cloud side is defined in code and deployed automatically.
 
-This file is the plan. **It contains no code on purpose.** You write every line. Each step tells you what the piece is, why it exists, what to build, how you know it's done, and questions you should be able to answer afterwards.
+This file is the plan. **It contains no code on purpose.** Each step tells you what the piece is, why it exists, what to build, how you know it's done, and questions you should be able to answer afterwards.
+
+**How this was built:** I built this project with an AI pair programmer (Claude Code), which wrote much of the code with me. To make sure I understood every piece rather than just collecting it, each step has a gate: before moving on, I answer that step's questions in my own words in [`NOTES.md`](NOTES.md), my learning log for the whole project.
 
 ```
  AT HOME                                          AZURE

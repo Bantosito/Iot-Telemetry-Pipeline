@@ -1,5 +1,7 @@
 # Build notes
 
+*My learning log: raw notes, experiments and answers written step by step while building this project. The longer walkthroughs (e.g. "Testing from zero", "Docker from zero", the command explanations) were written by Claude when I asked for them; the answers under each step's questions are my own.*
+
 Answer each step's questions here, in your own words, before moving to the next step.
 
 ## Step X.Y — <name>
