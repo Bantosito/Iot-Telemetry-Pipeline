@@ -5,7 +5,7 @@
 #
 # Recipe lines MUST be indented with a TAB, not spaces.
 
-.PHONY: help lint test build check up down logs
+.PHONY: lint help venv test build check up down logs watch
 
 help:
 	@echo "make lint    - ruff: read the code for likely mistakes"
@@ -15,7 +15,12 @@ help:
 	@echo "make up      - start broker, sensor and bridge in the background"
 	@echo "make down    - stop and remove the containers"
 	@echo "make logs    - follow the bridge's logs (Ctrl+C to stop)"
+	@echo "make watch   - start mosquitto watch subscried to everything (#)"
 
+venv: requirements-dev.txt
+	python -m venv .venv
+	.venv/bin/pip install -r requirements-dev.txt
+	touch venv
 lint:
 	ruff check .
 
@@ -36,3 +41,8 @@ down:
 
 logs:
 	docker compose logs -f bridge
+
+watch:
+	mosquitto_sub -t '#' -v
+
+ 

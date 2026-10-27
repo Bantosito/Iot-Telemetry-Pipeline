@@ -2,6 +2,8 @@
 
 *My learning log: raw notes, experiments and answers written step by step while building this project. The longer walkthroughs (e.g. "Testing from zero", "Docker from zero", the command explanations) were written by Claude when I asked for them; the answers under each step's questions are my own.*
 
+*Easier to browse: the same content split into one file per topic is in [`notes/`](notes/README.md).*
+
 Answer each step's questions here, in your own words, before moving to the next step.
 
 ## Step X.Y — <name>
@@ -48,6 +50,56 @@ A bad message will not crash the bridge as there are two try/execpt blocks. One 
 
 4. Why subscribe inside the on_connect callback rather than once at startup? (I already gave you the answer to this one above — re-state it in your own words.)
 -Subsctibing in the on_connect assures that subcriptions are declared every time a reconnect happens both when starting happens and when it lost conncection to the mqtt broker.
+
+### Exercises (hands-on, do them myself)
+
+Run the stack with `docker compose up -d`, and in a second terminal watch the dead-letter topic: `mosquitto_sub -t dead-letter -v`. For each exercise: **predict first**, then run, then write one line about what happened.
+
+**1. Be the sensor.** *(5 min)*
+Publish by hand from the laptop:
+```
+mosquitto_pub -t telemetry/test -m '{"schema":1,"device_id":"me","ts":"2026-10-22T12:00:00+00:00","temperature_c":22,"humidity_pct":50}'
+mosquitto_pub -t telemetry/test -m 'hello'
+mosquitto_pub -t telemetry/test -m '{"schema":1,"device_id":"me","ts":"2026-10-22T12:00:00","temperature_c":22,"humidity_pct":50}'
+```
+Watch `docker compose logs -f bridge` and the dead-letter terminal.
+- Which messages were forwarded and which dead-lettered? Is each reason clear enough that I'd know how to fix the sensor?
+
+**2. Which topics does the bridge hear?** *(5 min)*
+Publish the valid message from exercise 1 to each of these topics: `telemetry/a/b/c`, `telemetry`, `sensors/x`, `Telemetry/x`.
+- Which ones reach the bridge? Explain each using the subscription `telemetry/#` (and remember topics are case-sensitive).
+
+**3. The oversized message.** *(5 min)*
+```
+mosquitto_pub -t telemetry/test -m "$(python3 -c 'print("x" * 600)')"
+```
+(`python3 -c '...'` prints 600 x's; `$(...)` pastes that output into the command.)
+- What reason appears on dead-letter? The payload isn't even JSON, so why does the reason talk about size and not JSON?
+
+**4. Count check: valid + invalid = sent.** *(10 min)*
+In `.env` set `PUBLISH_INTERVAL_SECONDS=2` and `BROKEN_MESSAGE_PROBABILITY=0.3`, then `docker compose up -d`. Wait ~2 minutes until the bridge logs a `seen so far:` line.
+- Count the sensor's `published` lines (`docker compose logs sensor | grep -c published`). Does valid + invalid match? If not exactly, why might it be off by a few? (Hint: when did each counter start?)
+
+**5. Make forwarding fail.** *(15 min)*
+In `bridge/main.py`, make `forward()` fail sometimes, pretending Azure is down:
+```python
+def forward(reading: dict) -> None:
+    if reading["temperature_c"] > 20:
+        raise RuntimeError("pretend Azure is down")
+    log.info("forwarded: %s", reading)
+```
+Rebuild and run: `docker compose up -d --build bridge`.
+- Does the bridge crash? What does it log, and how does `forward_failed` change in the `seen so far` line?
+- Which `try/except` saves it? (This is 1.4 Q2, seen live.)
+- Undo: `git restore bridge/main.py`, then `docker compose up -d --build bridge`.
+
+**6. Remove the safety net.** *(10 min)*
+In `_on_message`, temporarily delete the `try/except ValidationError` around `validate()` (keep just `reading = validate(msg.payload)`). Rebuild, then send `hello` as in exercise 1.
+- What happens to the bridge? Look at `docker compose logs bridge` and `docker compose ps`. Do valid readings sent right after still get through?
+- Undo with `git restore bridge/main.py` and rebuild.
+
+**7. Thinking exercise: the dead-letter loop.** *(5 min, no code)*
+Imagine I renamed `DEAD_LETTER_TOPIC` to `telemetry/dead-letter`. The bridge subscribes to `telemetry/#`. What would happen the first time a bad message arrives? Why is the dead-letter topic deliberately *outside* `telemetry/`?
 
 
 What I'd do differently:
@@ -199,6 +251,54 @@ We are just testing functions, testing of a mqtt would require broker/networking
 
 2. What's a parametrised test, and why is it useful here?
 Parametrised test allows to run same test with differemt parameters testing all edge and specific input-output cases for a certain test. It is useful for the validator test as we can test diffrrent sent temperatures or various messasgee types and whether rejection they return is correct.
+
+### Exercises (hands-on, do them myself)
+
+All of these run on my laptop, with the venv active (`source .venv/bin/activate`), no Docker needed. **Predict first**, then run, then write one line about what happened. Always finish with `git restore bridge/validator.py tests/test_validator.py` and `pytest` all green.
+
+**1. Get to know pytest's options.** *(10 min)*
+```
+pytest -v                   # every test by name
+pytest -k timezone          # only tests whose name/ID contains "timezone"
+pytest -k "bool or True"    # -k accepts simple logic
+pytest -x                   # stop at the first failure
+pytest --lf                 # re-run only the tests that failed last time
+```
+- How many tests does `-k timezone` select, and why those?
+
+**2. Break the validator three ways.** *(15 min)*
+Make ONE change at a time in `bridge/validator.py`, predict which tests will fail, run `pytest`, and compare. Undo after each with `git restore bridge/validator.py`.
+- a) In `_validate_number`, change `low <= value <= high` to `low < value < high`.
+- b) Delete the `if parsed_ts.tzinfo is None:` check (both lines).
+- c) Change `MAX_MESSAGE_BYTES = 512` to `1024`.
+- Did any change break *no* test? If so, that's a gap in my tests. Which test would catch it?
+
+**3. Add my own test cases.** *(15 min)*
+In `test_invalid_messages_rejected_with_reason`, add new rows to the list, e.g.:
+```python
+(_encode(_valid(humidity_pct="50")), "humidity_pct must be a number"),
+(_encode(_valid(device_id="   ")), "device_id must be a non-empty string"),
+```
+- Run `pytest`. Does the second one pass? Is a device_id of three spaces OK? Should it be? (A real design question; there's no single right answer.)
+
+**4. Discover a surprise: NaN.** *(10 min)*
+Python's JSON parser accepts `NaN` ("not a number"), even though it isn't valid JSON. Try:
+```
+python -c "import sys; sys.path.insert(0, 'bridge'); from validator import validate; validate(b'{\"schema\":1,\"device_id\":\"a\",\"ts\":\"2026-10-22T12:00:00+00:00\",\"temperature_c\":NaN,\"humidity_pct\":50}')"
+```
+- Is it accepted or rejected? Read the error message: is the reason *accurate*? Why does a range check reject NaN? (Hint: in Python, every comparison with NaN is False.)
+- Write a test for it. What reason *should* it give?
+
+**5. Read a failure like a pro.** *(5 min)*
+Change `test_valid_reading_is_returned_unchanged` to compare against `_valid(temperature_c=99)` instead of `reading`. Run `pytest`.
+- Find, in pytest's output: the test name, the file and line, and the exact field that differs. How does pytest show the difference between two dicts?
+
+**6. Test first, then code (TDD taste).** *(15 min, optional)*
+Pretend there's a new rule: "`device_id` must be at most 64 characters."
+1. Write the test first (a new row: `_valid(device_id="x" * 65)` with reason `"too long"`). Run `pytest` and see it fail. That's expected: the rule doesn't exist yet.
+2. Add the rule to the validator. Run `pytest` and see green.
+- Why is seeing the test fail *first* useful? (Same idea as the red CI run in 1.7.)
+- This changes the contract, so undo both files with `git restore` afterwards, unless I decide the rule is worth keeping.
 
 What I'd do differently:
 
@@ -450,6 +550,106 @@ Running as a root in a container poses a risk to the container or even a system 
 
 4. What does `depends_on` guarantee, and what doesn't it?
 Depends on guarantees that service that other services depends on will be turned on first (mosquitto broker in our example). What it does not provide is assurring that dependand (ex. mosquito broker) will be fully running and the depending services will connect succesfully to it. 
+
+### Exercises (hands-on, do them myself)
+
+Start everything first with `docker compose up -d`. For each exercise: **predict what will happen before running it**, then run it and write one line about whether I was right. When finished: `docker compose up -d` again to get back to normal.
+
+**1. Step inside a container.** *(10 min)*
+```
+docker compose exec bridge sh      # opens a shell INSIDE the bridge container
+```
+Inside it, try:
+```
+whoami                 # who am I in here?
+pwd                    # where am I?
+ls                     # which files are here, and why only these?
+cat /etc/passwd        # find the "app" user the Dockerfile created
+apt-get install curl   # try to install software
+exit                   # leave the container
+```
+- Why does `apt-get` fail? Which Dockerfile line causes that, and is that good or bad?
+- Compare `ls` here with `ls bridge/` on my laptop. Which files are missing, and why? (Hint: the `COPY` lines.)
+
+**2. Prove `localhost` ≠ `mosquitto`.** *(5 min)*
+```
+docker compose exec bridge python -c "import socket; print(socket.gethostbyname('mosquitto'))"
+docker compose exec bridge python -c "import socket; socket.create_connection(('localhost', 1883))"
+docker compose exec bridge python -c "import socket; socket.create_connection(('mosquitto', 1883)); print('connected')"
+```
+- The first prints an IP address. Whose address is it, and who answered the name lookup?
+- Why does the second one fail with "Connection refused"? (This is 1.6 Q1, proven by experiment.)
+
+**3. One image, many containers.** *(10 min)*
+```
+docker images                              # the images: built once
+docker compose up -d --scale sensor=3      # three containers from ONE sensor image
+docker compose ps
+docker compose logs -f bridge              # Ctrl+C to stop watching
+```
+- How many sensor images exist, and how many sensor containers? (This is 1.6 Q2.)
+- All three use the same `DEVICE_ID`. What does the bridge's log look like? Which playground finding is this? (Hint: device spoofing, 29.9.)
+- Back to normal: `docker compose up -d --scale sensor=1`.
+
+**4. Watch the layer cache work.** *(10 min)*
+1. Add a comment line anywhere in `sensor/main.py`, then run `docker compose build sensor`. Look for `CACHED` next to the `pip install` step.
+2. Now add an empty line to the end of `sensor/requirements.txt` and build again.
+- Which build was faster, and why? Which Dockerfile line order makes this possible?
+- Undo both edits afterwards (`git restore sensor/main.py sensor/requirements.txt`).
+
+**5. Settings via `.env`.** *(10 min)*
+```
+cp .env.example .env
+```
+In `.env` set `PUBLISH_INTERVAL_SECONDS=2` and `BROKEN_MESSAGE_PROBABILITY=0.3`, then:
+```
+docker compose up -d                    # Compose notices the change and recreates containers
+mosquitto_sub -t dead-letter -v         # from the laptop: watch rejected messages
+```
+- Now also set `MQTT_HOST=localhost` in `.env` and run `docker compose up -d` again. Does it break? Why not? (Hint: the `environment:` block in `docker-compose.yml`.)
+- Afterwards, put the interval back to 30. Is `.env` showing up in `git status`? Why not?
+
+**6. `depends_on` and retries.** *(10 min)*
+```
+docker compose down                     # stop and remove everything
+docker compose up -d bridge             # start ONLY the bridge
+docker compose ps
+```
+- Did the broker start too, even though I only asked for the bridge? Which line caused that?
+Now the opposite: broker down, bridge up.
+```
+docker compose stop mosquitto
+docker compose logs -f bridge           # watch for ~30 seconds, Ctrl+C to stop
+docker compose start mosquitto
+```
+- What does the bridge log while the broker is gone? How does the waiting time between retries grow? And what happens when the broker comes back? (This is 1.6 Q4 plus 1.4 Q4.)
+
+**7. Recreate exit code 137 on purpose.** *(5 min)*
+```
+docker compose stop -t 0 sensor         # -t 0 = give it ZERO seconds to stop politely
+docker inspect -f '{{.State.ExitCode}}' project-sensor-1
+docker compose stop sensor              # normal stop, with a grace period
+docker inspect -f '{{.State.ExitCode}}' project-sensor-1
+docker compose start sensor
+```
+- Why 137 the first time and 0 the second? Which signal did the sensor get each time? (See "The bug" section above.)
+
+**8. Does it restart by itself?** *(5 min)*
+Stop the bridge's program from *inside* the container, the way a crash would:
+```
+docker compose exec bridge sh -c "kill 1"     # PID 1 = the main program (python main.py)
+docker compose ps                              # run this a few times
+```
+- Did it come back on its own? Which line in `docker-compose.yml` is responsible?
+- Then try `docker compose stop bridge` and wait. Does it come back this time? Why the difference? (Hint: the meaning of "unless-*stopped*".)
+
+**9. Clean up and see what Docker stores.** *(5 min)*
+```
+docker compose down          # removes containers + network; images stay
+docker images                # images are still there
+docker system df             # how much disk Docker uses in total
+docker compose up -d         # starts again quickly: no rebuild needed. Why?
+```
 
 What I'd do differently:
 
@@ -774,7 +974,204 @@ What surprised me / what broke:
 Answers to the questions (in my own words):
 
 1. What triggers your workflow?
+The workflow is triggered automaticlay when repo is pushed/pull request is creted to github. Github actions look for yml/yaml files in .github/workflows folder and ci.yml that inside of it triggers the CI pipeline
 
 2. Why also build the images in CI, not only run tests?
+The test (pytest| ruff) does not check  whether the compose was written write or wheter the container can be composed so to assure that the image is valid and creates a working container.
+
+### Exercises (hands-on, do them myself)
+
+Each exercise: do it, watch the result, then write one line under it about what happened. Afterwards, always get CI back to green.
+
+**1. Read a red run.** *(5 min, browser only)*
+On GitHub: **Actions** tab → the run "Deliberately failing test to check CI turns red" → job `lint-and-test` → expand **Test (pytest)**. Find the line where pytest explains *why* `1 + 1 == 3` failed.
+- Which job was skipped, and which line in `ci.yml` caused that?
+
+**2. Make the linter fail, not the tests.** *(10 min)*
+Add an unused import, e.g. `import os`, at the top of `tests/test_validator.py`.
+- First run `ruff check .` locally. What does it say, and what's the rule code?
+- Commit and push. Which step goes red this time? Did `Test (pytest)` even run? Why not?
+- Fix it with `ruff check . --fix`, commit, push, and see green again.
+
+**3. Make the build fail, not the code.** *(10 min)*
+In `sensor/Dockerfile`, change `COPY main.py .` to `COPY mian.py .` (a typo).
+- Run `pytest` and `ruff check .` locally: do they still pass? (They should. This is exactly the point of 1.7 Q2.)
+- Push it. Which job fails now? Read the error message in the `Build images` step.
+- Fix the typo, push, and see green again.
+
+**4. Undo with revert myself.** *(5 min)*
+After one of the exercises above, instead of fixing by hand, undo the breaking commit:
+```
+git log --oneline -3          # find the commit's ID
+git revert --no-edit <ID>
+git push
+```
+- Look at `git log --oneline` afterwards: what did revert add, and what did it NOT delete?
+
+**5. Catch it before CI does.** *(5 min)*
+Before pushing, run exactly what CI runs, locally:
+```
+ruff check .
+pytest
+docker compose build
+```
+- If all three pass locally, CI should pass too. Why is it still useful to have CI anyway? (Hint: a clean machine, and other people's pull requests.)
+
+**6. Try `gh` (optional).** *(10 min)*
+```
+brew install gh
+gh auth login
+gh run list
+gh run view --log-failed      # on a red run
+```
+- Compare with the `curl ... | grep` command from these notes. Which is easier, and why does `gh` need a login while `curl` didn't? (Hint: the repo is public, so reading it needs no login.)
+
+**7. Bonus: break the trigger.** *(5 min, reading only, don't push this)*
+Look at the `on:` block in `ci.yml`. If it said only `on: pull_request`, what would happen on my normal `git push` to `main`? And if it said `on: push: branches: [main]`, what would happen on a push to another branch?
 
 What I'd do differently:
+
+## Extra (after 1.7): Makefile as a local CI pipeline
+Date: 27.10.2026 (written by Claude at my request)
+
+What I built:
+- `Makefile` in the project root: one-word shortcuts for the project's commands.
+- `.github/workflows/ci.yml` now calls the same Makefile targets (`make lint`, `make test`, `make build`) instead of the raw commands.
+
+Side note: I renamed the GitHub repo to **https://github.com/Bantosito/Iot-Telemetry-Pipeline**. Older links in these notes (`Iot-Telemtr-Pipeline-Course`) still work, because GitHub forwards them. Updated the saved address with `git remote set-url origin https://github.com/Bantosito/Iot-Telemetry-Pipeline.git` (check with `git remote -v`), and updated the badge links in the README.
+
+### Makefiles from zero
+
+`make` is a tool from 1976, already installed on macOS (`make --version`). It reads a file called `Makefile` and runs **named groups of commands**:
+```makefile
+test:            # the target's name, followed by a colon
+	pytest -v    # the command(s) it runs - indented with a TAB
+```
+Then `make test` runs `pytest -v`.
+
+`make` was built for compiling C programs, where it cleverly rebuilds only what changed. Python has nothing to compile, so in Python projects it's simply **a menu of the project's commands**: `make test` instead of remembering `pytest -v`, `make up` instead of `docker compose up --build -d`.
+
+⚠️ **The TAB rule.** Command lines must start with a real TAB character, not spaces. With spaces, make fails with `missing separator`. (VS Code may turn tabs into spaces; for Makefiles it normally keeps tabs.)
+
+### My Makefile, piece by piece
+
+```makefile
+.PHONY: help lint test build check up down logs
+```
+Tells make these names are *commands*, not files. Without it, a file called `test` in the folder would make `make test` say "nothing to do" (a leftover from make's file-building origins).
+
+```makefile
+help:
+	@echo "make lint    - ruff: read the code for likely mistakes"
+	...
+```
+The first target in the file is the **default**, so plain `make` prints this menu. The `@` hides the command itself and shows only its output (without it, make prints each command before running it).
+
+```makefile
+lint:
+	ruff check .
+test:
+	pytest -v
+build:
+	docker compose build
+```
+The three checks CI runs, each with its own name.
+
+```makefile
+check: lint test build
+	@echo "All checks passed - safe to push."
+```
+**Dependencies.** Names after the colon run *first*, in order: lint, then test, then build. **If any fails, make stops immediately** and the rest don't run, exactly like a red step in CI skipping the steps after it. The message only appears if all three passed.
+
+```makefile
+up:
+	docker compose up --build -d
+down:
+	docker compose down
+logs:
+	docker compose logs -f bridge
+```
+Everyday Docker shortcuts.
+
+### Why it works as a local CI pipeline
+
+Before: CI ran `ruff check .`, `pytest -v`, `docker compose build`, and locally I had to remember to type the same three commands myself.
+Now: one command runs the same checks before I push:
+```
+source .venv/bin/activate     # once per terminal tab: make uses whatever ruff/pytest it finds
+make check
+```
+Ran it: ruff passed → 32 tests passed → both images built → `All checks passed - safe to push.`
+
+**CI calls the Makefile too.** In `ci.yml`, `run: ruff check .` became `run: make lint`, and so on. The commands now live in **one place**: if I change or add a check in the Makefile, my laptop and GitHub both get it. They can't drift apart. Pushed it, and CI went green running through the Makefile. ✅
+
+**What the local pipeline can't replace:** `make check` runs on *my* laptop, with my files, my installed tools and my `.venv`. GitHub CI runs on a clean machine and also checks other people's pull requests. Local = catch problems sooner; CI = the final word.
+
+### Alternatives I might hear about
+- **`just`**: a modern `make` alternative with simpler syntax and no TAB trap.
+- **`tox` / `nox`**: Python-specific runners, e.g. testing against several Python versions.
+- **pre-commit hooks**: run checks automatically on every `git commit`, so you can't even commit lint errors.
+
+### Exercises (predict → run → record)
+
+**1. The menu.** Run `make` with no target. Why does it show the help text? *(1 min)*
+Is it becuase its the first command that appears?
+
+**2. Watch it stop on failure.** *(5 min)* Add `import os` (unused) to the top of `tests/test_validator.py`, then run `make check`.
+- Which step fails? Do the tests and the build still run? Why not? Compare with the red CI run in 1.7.
+- Undo: `git restore tests/test_validator.py`. 
+
+It stopped check on: import: Nosuch file or directory- returend error 1
+
+**3. The TAB trap.** *(5 min)* In the `Makefile`, replace the TAB before `pytest -v` with 4 spaces and run `make test`. Read the error message. Undo with `git restore Makefile`.
+
+RETURNED: Makefile:24: *** missing separator.  Stop.
+
+**4. Forget the venv.** *(3 min)* Open a new terminal tab, `cd` into the project *without* activating the venv, and run `make test`. What happens, and why? (Hint: which `pytest` can the terminal find?)
+
+make works but it cannot run
+
+ruff check . make: ruff: No such file or directory make: *** [lint] Error 1
+make: pytest: No such file or directory-> Error 1
+
+Docker up/down works and logs work
+
+**5. See what make runs.** *(2 min)* `make -n check` (`-n` = "dry run": print the commands without running them). Useful for checking what a target does before trusting it.
+
+Interesting, good to know
+
+**6. Add my own target.** *(10 min)* Add a target `watch` that runs `mosquitto_sub -t '#' -v`. Add it to `.PHONY` and to `help`. Run `make watch` while the stack is up.
+
+Its in there, good addition 
+
+## My questions about CI (answered by Claude, 27.10.2026)
+
+**Why does CI need `setup-python` for the tests, but no setup for Docker before `docker compose build`?**
+
+Because the runner already has Docker, but not *my* Python.
+- `runs-on: ubuntu-latest` is not an empty computer. It's a ready-made Ubuntu machine with lots of tools preinstalled: git, **Docker + Docker Compose**, `make`, curl, Node... So `docker compose build` just works.
+- Ubuntu also ships *a* Python, but `setup-python` is still needed:
+  1. **Exact version**: the preinstalled Python is whatever Ubuntu ships and changes when GitHub upgrades `ubuntu-latest`. Pinning `"3.12"` = the same Python as my laptop and my Docker images.
+  2. **A safe place to `pip install`**: recent Ubuntu blocks `pip install` into the system Python, to protect the OS's own tools. `setup-python` gives a separate Python where installing is allowed (like my `.venv`).
+  3. **The pip cache**, for faster runs.
+- **The deeper reason:** building an image only needs the Docker *engine*. Everything inside the image comes from the Dockerfile. `FROM python:3.12-slim` brings its own Python, whatever the runner has. The tests run directly on the runner, so the runner needs the right Python. The images carry their own environment, so the runner just needs Docker. That's the point of containers (1.6).
+
+**How was CI set up on GitHub? Does GitHub just look for `ci.yml`?**
+
+Almost: GitHub reads **every** `.yml`/`.yaml` file in `.github/workflows/`. `ci.yml` is only the name I chose. No other setup was needed:
+1. GitHub Actions is **on by default** for every new repo.
+2. On every event (push, pull request...), GitHub checks the commit for files in `.github/workflows/`.
+3. For each file it reads `on:`. If the event matches, it queues a run.
+4. A runner starts and works through `jobs:`.
+
+So my first push "switched CI on" just by containing `.github/workflows/ci.yml`. There's no registration step and no button. Another file, e.g. `nightly.yml` with `on: schedule`, would run independently next to it.
+- Optional settings live in the repo's **Settings → Actions** (turn Actions off, restrict which actions are allowed, permissions).
+- Free for public repos on standard runners; private repos get a monthly allowance of minutes.
+- The file name matters in one place: the README badge URL points to `.../workflows/ci.yml/badge.svg`, so renaming the file would break the badge.
+
+**What is a README badge, and why have one?** *(answered by Claude, 27.10.2026)*
+
+A small image at the top of the README that shows a **live status**. Mine is the green "CI | passing" under the title.
+- It isn't stored in the repo. It's a link to an image GitHub draws fresh each time the README is viewed: `https://github.com/Bantosito/Iot-Telemetry-Pipeline/actions/workflows/ci.yml/badge.svg`. Green **passing** or red **failing**, based on the latest `ci.yml` run on `main`. Clicking it opens the Actions page.
+- **Why:** it answers "does this actually work?" in one second, before anyone reads code. For reviewers and recruiters, it shows automated tests that pass right now, i.e. a maintained, checked project. For me, a red badge on my own README is hard to ignore. And it can't be faked: it reflects the real last run.
+- Other badges (coverage %, version, license, Python version) work the same way, often via shields.io. For a portfolio, the CI badge is the one that matters.

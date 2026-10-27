@@ -21,3 +21,6 @@ logs/
 
 # Claude Code project rules (kept local for now)
 CLAUDE.md
+
+# Topic-split notes (kept local until rearranged at the end of the project)
+notes/

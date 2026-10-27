@@ -1,6 +1,6 @@
 # IoT telemetry pipeline — build guide
 
-[![CI](https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course/actions/workflows/ci.yml/badge.svg)](https://github.com/Bantosito/Iot-Telemtr-Pipeline-Course/actions/workflows/ci.yml)
+[![CI](https://github.com/Bantosito/Iot-Telemetry-Pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Bantosito/Iot-Telemetry-Pipeline/actions/workflows/ci.yml)
 
 A sensor at home streams readings into Azure, where they're stored, modelled and shown in a report. The cloud side is defined in code and deployed automatically.
 
@@ -25,6 +25,7 @@ This file is the plan. **It contains no code on purpose.** Each step tells you w
 - **One step at a time, in order.** Each builds on the last.
 - **Commit at the end of every step**, with a message saying what now works. Your commit history is part of the portfolio.
 - **Answer the questions in `NOTES.md`** in your own words. If you can't answer one, you haven't finished the step. These answers are your interview preparation.
+- **Do the step's exercises.** Every step gets a set of hands-on exercises in `NOTES.md`, next to its questions: small experiments that break, poke at or extend what was just built. For each one, predict what will happen, run it, and write one line on whether you were right. Questions check that you can explain it; exercises check that you've seen it. Always finish an exercise by getting back to a working, green state.
 - **Stuck for 45 minutes?** Stop. Write down exactly what you expected, what happened, and what you tried. Then ask (me, docs, a forum). Writing it down solves it half the time.
 - **Use AI to explain, not to write.** Ask "why does this error happen?" rather than "write this for me".
 
@@ -270,6 +271,7 @@ Date:
 What I built:
 What surprised me / what broke:
 Answers to the questions:
+Exercises (prediction → what actually happened):
 What I'd do differently:
 ```
 
