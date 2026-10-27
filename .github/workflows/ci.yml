@@ -22,11 +22,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
+      # Same Makefile targets as local `make check`, so the two can't drift apart.
       - name: Lint (ruff)
-        run: ruff check .
+        run: make lint
 
       - name: Test (pytest)
-        run: pytest -v
+        run: make test
 
   build-images:
     # Only worth building if the code passed its checks.
@@ -38,4 +39,4 @@ jobs:
       # Catches what tests can't: a broken Dockerfile, a missing file in a
       # COPY, a requirement that won't install on Linux.
       - name: Build images
-        run: docker compose build
+        run: make build
