@@ -1175,3 +1175,827 @@ A small image at the top of the README that shows a **live status**. Mine is the
 - It isn't stored in the repo. It's a link to an image GitHub draws fresh each time the README is viewed: `https://github.com/Bantosito/Iot-Telemetry-Pipeline/actions/workflows/ci.yml/badge.svg`. Green **passing** or red **failing**, based on the latest `ci.yml` run on `main`. Clicking it opens the Actions page.
 - **Why:** it answers "does this actually work?" in one second, before anyone reads code. For reviewers and recruiters, it shows automated tests that pass right now, i.e. a maintained, checked project. For me, a red badge on my own README is hard to ignore. And it can't be faked: it reflects the real last run.
 - Other badges (coverage %, version, license, Python version) work the same way, often via shields.io. For a portfolio, the CI badge is the one that matters.
+
+
+## Step 1.8 — Azure account and budget alert
+Date: 28.10.2026
+
+What I built (in the Azure portal, by hand; it gets rewritten as code in step 2.1):
+- An Azure free account. Billing currency: **DKK**.
+- A monthly budget on my subscription, with email alerts at **50% actual** and **100% forecasted**.
+
+What surprised me / what broke:
+- The billing page showed **"Your payment data cannot be loaded"**. Everything else works so far. This is usually a portal display glitch (ad blocker, privacy extension, blocked cookies), not a problem with the subscription. Check: **Subscriptions** → my subscription → **Status = Active**, and note the offer name.
+
+What the free account includes (my summary):
+- $200 credit for the first 30 days, 12 months of selected services free, and spending protection (a spending limit).
+- After the free period: *to verify on my own subscription*. With the classic free account, resources are **disabled** (not charged) when the 30 days or the credit run out, unless I **choose** to upgrade to pay-as-you-go. Look for a "spending limit" setting or an "Upgrade" banner on the subscription.
+
+### Cloud costs from zero (written by Claude)
+
+**How cloud billing works.** No upfront price: you pay for what you use, usually per hour that a resource exists or per operation it performs. A database that runs 24/7 is billed 24/7, even if nobody queries it. That's why a forgotten resource is the classic cloud-cost accident.
+
+**Three kinds of "free" in my account:**
+| Kind | What it means | Relevant for this project |
+|---|---|---|
+| 30-day credit | $200 to spend on anything for 30 days | a safety buffer while learning |
+| 12 months free | selected services free up to a monthly amount (e.g. hours per month) | PostgreSQL flexible server, Burstable B1ms (step 2.3), *check it's on the list* |
+| always free | small tiers that stay free | IoT Hub F1 (8,000 msgs/day), Functions (up to a number of executions per month) |
+
+"Free" always means **free up to a limit**. Going over a limit, or picking a bigger tier by mistake (e.g. B2s instead of B1ms), costs money.
+
+**Spending limit vs budget: two different safety nets.**
+- **Spending limit** (part of the free account): when credit runs out, Azure *stops* resources instead of charging. A hard stop.
+- **Budget** (what I created): **only sends emails**. It never stops anything. Hitting 100% means "you've been warned", nothing more.
+- **Cost data is delayed** (hours, up to about a day), so alerts are an early warning, not real-time.
+
+**My two alert rules:**
+- **Actual 50%**: fires when I've *really spent* half the budget. A fact, but it arrives after the money is spent.
+- **Forecasted 100%**: Azure projects my spending to the end of the month at the current rate, and fires if the projection goes **over** the budget. It warns *early*, before the money is spent: e.g. on day 5, "at this rate you'll spend 300%".
+Together: forecast = early warning, actual = confirmation.
+
+**Where things are in the portal:**
+- **Cost Management + Billing** → currency, invoices, payment methods.
+- **Cost Management → Budgets** → my budget and its alert rules.
+- **Cost Management → Cost analysis** → what has been spent, by resource and by day.
+- **Subscriptions** → my subscription: status, offer type, spending limit.
+
+**Why first, before any resource:** from week 2 on I'll create IoT Hub, PostgreSQL and a Function App. If I misconfigure something, the budget email is how I find out in days instead of on next month's invoice. In step 2.1 the same budget is rewritten in **Bicep** (infrastructure as code), so it's documented and recreated automatically.
+
+Answers to the questions (in my own words):
+
+1. What in this project could cost money?
+While its in the free account there will be no charge to the card, hoverwer if i change to pay as you go I will be charged for resources I use according to the billing.
+
+2. What's the difference between "actual" and "forecasted" in a budget alert?
+Actual cost is the current amount of money used on resources, so when it hits the set alert ammount it means that this amount was already used. Forecasted cost is a prediction that with this pace os spending by the end of alert period (ex. a month) spending will reach over set budget.
+
+### Exercises (predict → run → record)
+
+**1. Check my subscription's real terms.** *(5 min)*
+Portal → **Subscriptions** → my subscription. Find: Status, offer name, and whether there's a spending limit or an "Upgrade" banner.
+- Write down exactly what happens on day 31 for *my* account. Does it switch to pay-as-you-go by itself, or not?
+
+**2. Put a date in my calendar.** *(2 min)*
+Find the date my 30-day credit ends (it's shown on the subscription or the free services page). Put a reminder **3 days before it** in my calendar: "Azure free credit ends — check resources and costs."
+
+**3. Look at the cost tools while they're empty.** *(5 min)*
+Open **Cost analysis**. It should show ~0 DKK. Find where I could group costs "by resource". Predict: when PostgreSQL exists in step 2.3, will its cost appear immediately? (Hint: the delay.)
+
+**4. Find the free services list.** *(10 min)*
+Portal search: **"Free services"**. Find *Azure Database for PostgreSQL flexible server* and *IoT Hub*.
+- What exactly is free: which tier, how many hours or messages per month?
+- Work it out: a B1ms server running 24/7 for a 31-day month is 744 hours. Does that fit inside the free monthly hours?
+
+**5. Read my budget's alert rules back.** *(3 min)*
+Open the budget → edit. Check both rules are there: 50% *Actual*, 100% *Forecasted*. Which one would fire first if I accidentally created an expensive resource on day 2 of the month, and why?
+
+**6. Fix the payment-data error (optional).** *(5 min)*
+Open the payment page in a private browser window with extensions off. Does the error disappear? If yes, it was the browser, not the account.
+
+What I'd do differently:
+
+
+## Can I set a hard spending limit? (answered by Claude, 28.10.2026)
+
+**Only partly. Azure has no general "never charge me more than X" switch.**
+- **Spending limit** = the only real hard limit. It exists only on credit-based offers (free trial, Visual Studio subscriptions). When the credit runs out, Azure *stops* resources instead of charging. **Pay-as-you-go has no spending limit**, which is why "what happens on day 31" matters.
+- **Budgets only send alerts.** But a budget can trigger an **action group**, which can run automation (e.g. a script that stops or deletes resources at 100%): a DIY hard limit. Not exact, because cost data is hours late, so a small overshoot is possible.
+- **Prevention beats limits:**
+  - **Azure Policy**: rules like "only allow PostgreSQL B1ms, only IoT Hub F1". Azure *refuses* to create anything bigger, even by mistake or from a pipeline.
+  - **Infrastructure as code**: every resource and its tier is written down and reviewed.
+  - **Teardown**: delete the resource group when idle; IaC rebuilds it in one command (step 3.3). PostgreSQL can be *stopped* to pause compute billing (max 7 days, then it auto-starts; storage is still billed).
+- **Plan for this project:** budget alerts + a Policy restricting tiers + teardown when idle.
+
+
+## Week 2 kickoff: Bicep or Terraform? (discussion with Claude, 28.10.2026)
+
+**Decision: Terraform** (the README originally planned Bicep). README steps 2.1, 2.3, 2.4 and 3.2 were updated.
+
+Both tools do the same job: **describe cloud resources in text files, and the tool makes the cloud match.** The difference is who makes them and how they track what exists.
+
+| | **Bicep** | **Terraform** |
+|---|---|---|
+| Made by | Microsoft | HashiCorp (owned by IBM since 2025) |
+| Clouds | Azure only | any: Azure, AWS, GCP, plus GitHub, Kubernetes, Datadog… |
+| Language | Bicep (compiles to Azure's ARM JSON) | HCL |
+| Tracks what exists via | Azure itself, nothing extra to manage | a **state file** that must be stored safely, usually remotely (e.g. Azure Storage) |
+| Preview changes | `az deployment ... what-if` | `terraform plan` |
+| New Azure features | supported immediately | sometimes later (the `azapi` provider fills gaps) |
+| Learning curve | gentle if you know Azure | steeper: providers, state, backends |
+| Job market | Azure-only companies | far more common in job ads, especially consultancies and multi-cloud teams |
+| Licence | free, open source | source-available since 2023; **OpenTofu** = the fully open fork |
+
+**Bicep: pros/cons.** Less to learn, nothing extra to go wrong, no state file to protect or lose, always current with Azure. But it's an Azure-only skill that doesn't transfer to AWS or GCP.
+
+**Terraform: pros/cons.** One tool and one way of thinking for every cloud, a huge community, and what job postings ask for. The extra concept is **state**: Terraform's memory of what it created. It can contain secrets and must be shared between laptop and CI, so it lives in a remote backend, which must exist *before* Terraform can use it (a chicken-and-egg problem solved by a small bootstrap step).
+
+**Why Terraform here:** the project is a portfolio for job applications, and Terraform is what the ads ask for. Its concepts (state, plan/apply, providers, remote backends, locking) apply to every cloud, and Bicep can be picked up quickly later for an Azure-only job. The state file is extra work, but it's exactly what interviewers ask about ("where do you keep your state, and how do you lock it?").
+
+
+## Quick questions (answered by Claude, 28.10.2026)
+
+### Where are the Azure CLI and Terraform installed? Does it matter that my venv is active?
+- Homebrew installs everything under **`/opt/homebrew`**: the program files in `/opt/homebrew/Cellar/<name>/<version>/`, plus a shortcut in **`/opt/homebrew/bin/`**, which is on the terminal's search path. Check with `which az` and `which terraform`.
+- **The venv doesn't matter.** A venv only changes which *Python things* the terminal finds (`python`, `pip`, `pytest`, `ruff`) by putting `.venv/bin` first on the search path. Terraform is a single Go program. The Azure CLI is Python, but brew gives it **its own private Python**, separate from `.venv`.
+
+| Installed with | Lives in | Works |
+|---|---|---|
+| `pip install` (venv active) | `.venv/` in this project | only here, only with the venv active |
+| `brew install` | `/opt/homebrew/` | everywhere, every project, venv or not |
+
+(That's why `make test` failed without the venv, while `docker` and `make` worked.)
+
+### My subscription is called "Azure subscription 1". Is it the free one?
+The name is just a default label that every new subscription gets. The real offer type is stored separately:
+```
+az account show --query id --output tsv          # prints the subscription ID
+az rest --method get --url "https://management.azure.com/subscriptions/<ID>?api-version=2022-12-01" --query subscriptionPolicies
+```
+- `az rest` sends a request directly to Azure's management API; `--query` picks out one part of the reply.
+- My result: `"quotaId": "FreeTrial_2014-09-01"` → **Free Trial**; `"spendingLimit": "On"` → the hard limit is active.
+- **So, day 31:** when the credit or the 30 days run out, Azure **stops resources, it doesn't charge my card.** It only becomes pay-as-you-go if I *choose* to upgrade, and upgrading turns the spending limit off. After that, budget alerts are the main protection.
+- Quick check of which subscription the terminal uses: `az account show --output table`.
+
+### What is Homebrew, what is a tap?
+**Homebrew (`brew`) = a package manager for macOS**: install, update and remove software with one command, including dependencies (e.g. it gave `azure-cli` its own Python). Like `apt` on Ubuntu.
+
+| Word | Meaning | Example |
+|---|---|---|
+| formula | recipe for a command-line tool | `terraform`, `azure-cli`, `mosquitto` |
+| cask | recipe for a regular Mac app | `brew install --cask docker` |
+| bottle | pre-compiled package, so installs are fast | automatic |
+| tap | an extra source of formulas (a Git repo on GitHub) | `hashicorp/tap` |
+| Cellar | where packages actually live | `/opt/homebrew/Cellar/` |
+
+**Why a tap for Terraform:** Homebrew's main collection only accepts open-source licences. After Terraform's 2023 licence change, it froze Terraform at 1.5.7. HashiCorp publishes current versions in its own tap:
+- `brew tap hashicorp/tap` = also look in github.com/hashicorp/homebrew-tap;
+- `brew install hashicorp/tap/terraform` = install *from that tap* (got v1.17.0).
+
+**Useful commands:**
+```
+brew install <name> / brew uninstall <name>
+brew list                 # what's installed
+brew info <name>          # version, location, dependencies
+brew update               # refresh available versions
+brew outdated             # what has newer versions
+brew upgrade [<name>]     # upgrade everything or one package
+brew doctor               # diagnose Homebrew problems
+brew services list        # background services started by brew
+```
+**Idea for later:** a `Brewfile` listing this project's tools, so `brew bundle` installs all of them on a new Mac (like `requirements.txt`, but for system tools).
+
+
+### What is a Brewfile, and does it go to GitHub? *(28.10.2026)*
+A `Brewfile` lists the **system tools** a project needs, like `requirements.txt` does for Python packages. **Yes, it's committed to GitHub**: it contains only tool names, no secrets, and it lets anyone (or me on a new Mac) install everything with one command.
+- Mine: `tap "hashicorp/tap"`, `brew "hashicorp/tap/terraform"`, `brew "mosquitto"`, `cask "azure-cli"`, `cask "docker-desktop"`, and `gh` as an optional commented line.
+- How I made it: `brew bundle dump --file=<somewhere> --force` writes *everything* installed on the Mac to a file; then I copied over only this project's tools (not unrelated ones like mac-mouse-fix).
+- Commands:
+```
+brew bundle            # install everything in ./Brewfile that's missing
+brew bundle check      # is everything installed and up to date?
+brew outdated          # which installed packages have newer versions
+brew upgrade <name>    # upgrade one package
+```
+- First check said mosquitto and docker-desktop "need to be installed or updated": they're installed but **outdated** (`brew outdated` confirmed). Upgrade when convenient: upgrading Docker Desktop restarts running containers.
+
+
+## Step 2.1 — Terraform, part 1: bootstrap (log, written by Claude, 28.10.2026)
+
+### Tools installed
+```
+brew install azure-cli                  # the Azure CLI: "az"
+brew tap hashicorp/tap                  # add HashiCorp's own package source
+brew install hashicorp/tap/terraform    # Terraform v1.17.0
+az login                                # opens the browser, logs the terminal in to Azure
+```
+Check: `terraform -version` → `Terraform v1.17.0`; `az account show --output table` → `Azure subscription 1`, `Enabled`, the Free Trial (see quick questions).
+
+### Why a "bootstrap" step at all: the chicken-and-egg problem
+Terraform keeps a **state file**: its own record of "I created these resources, and these are their IDs". Next time it compares that record with my `.tf` files and with what really exists in Azure, and works out what to change.
+
+The state file shouldn't live on my laptop:
+- CI (step 3.2) must use the **same** state as my laptop, or they'd each think they own different things;
+- if the laptop dies, the state is gone, and Terraform "forgets" everything it created;
+- it can contain secrets (connection strings, keys), so it needs proper access control.
+
+So it goes into an **Azure Storage account**. But who creates that storage account? If Terraform did, where would the state *of the storage account* live? That's the chicken-and-egg problem. Solution: create it **once, by hand, with `az` commands**, outside Terraform. This one-time setup is called **bootstrapping**.
+
+It goes in its **own resource group** (`rg-tfstate`), separate from the project's resources. When I delete the project's resource group (step 3.3, teardown), the state survives.
+
+### Problem 1: "Subscription was not found"
+First command:
+```
+az storage account check-name --name sttfstatebantos --output table
+```
+(asks Azure whether that storage account name is still free; names are global across all of Azure)
+
+Error: `(SubscriptionNotFound) Subscription b9efd0b9-... was not found.`, even though the subscription clearly exists and is Enabled.
+
+**The real cause: resource providers.** Azure is made of hundreds of separate services, each called a **resource provider**:
+| Provider | Service |
+|---|---|
+| `Microsoft.Storage` | storage accounts (where the Terraform state will live) |
+| `Microsoft.Devices` | IoT Hub |
+| `Microsoft.DBforPostgreSQL` | PostgreSQL (step 2.3) |
+| `Microsoft.Web` | Function Apps (step 2.4) |
+
+A new subscription has most of them **switched off** ("NotRegistered"). Registering one = ticking "I want to use this service". It's **free, creates nothing and costs nothing**.
+- The **portal** registers providers automatically the first time you click "Create...", so you never notice.
+- The **CLI and Terraform** sometimes don't, and Azure then returns a misleading error like "Subscription not found".
+
+### The fix, command by command
+```
+az provider show --namespace Microsoft.Storage --query registrationState --output tsv
+```
+- `az provider show`: show information about one provider;
+- `--namespace Microsoft.Storage`: which provider;
+- `--query registrationState`: keep only the registration status from the reply;
+- `--output tsv`: plain text instead of JSON.
+
+Result: `NotRegistered`. That's the cause.
+
+```
+az provider register --namespace Microsoft.Storage --wait 2>/dev/null
+```
+- `az provider register`: switch the provider on;
+- `--wait`: don't return until it's finished (10–60 s). Without it the command returns at once and registration continues in the background;
+- `2>/dev/null`: throw away error output. `2>` = "send error output to...", `/dev/null` = a black hole that discards anything written to it. (The opposite of `2>&1` from 1.5, which *merges* errors into normal output.)
+
+I joined it to the check with `;` = "then run the next command, whatever happened" (unlike `&&`, which only continues on success).
+
+Ran `show` again → **`Registered`** ✅. Same for **`Microsoft.Devices`** (IoT Hub) → `Registered` ✅. The others get registered when their steps come.
+
+**The `SyntaxWarning` lines** that `az` printed: the Azure CLI is a Python program, and brew gave it Python 3.14, which warns about an outdated escape sequence inside Microsoft's own code. Harmless; nothing to do with this project. That's why I hid it with `2>/dev/null`.
+
+
+### What is a resource provider, and why did Azure say "Subscription not found"? *(28.10.2026)*
+Azure is hundreds of separate services, each a **resource provider** (`Microsoft.Storage` = storage accounts, `Microsoft.Devices` = IoT Hub, `Microsoft.DBforPostgreSQL` = PostgreSQL...). A new subscription has most of them **switched off**. The portal switches them on silently when you first create something; the CLI/Terraform sometimes don't, and Azure then gives misleading errors like "Subscription not found".
+```
+az provider show --namespace Microsoft.Storage --query registrationState --output tsv   # NotRegistered / Registered
+az provider register --namespace Microsoft.Storage --wait                              # switch it on (free, creates nothing)
+```
+Full walkthrough → [11-terraform.md](11-terraform.md) (step 2.1 bootstrap log)
+
+### What do `2>/dev/null` and `;` mean in a command?
+- `2>/dev/null`: throw away a command's **error output**. `2` = the error stream, `>` = send to, `/dev/null` = a black hole. (`2>&1` instead *merges* errors into normal output.)
+- `;`: run the next command **no matter what**. `&&` runs it **only if the previous succeeded**.
+
+
+## Azure fundamentals, with AWS comparisons (written by Claude, 28.10.2026)
+
+*A reference "map of Azure". It will grow as the project meets new services. AWS equivalents are included because job ads often ask for "Azure or AWS", and the concepts transfer.*
+
+### 1. What a cloud provider actually sells
+Instead of buying servers, you **rent** computing as services, billed by use. Services sit on a scale from "you manage more" to "the provider manages more":
+
+| Model | You manage | Provider manages | Azure example | AWS example |
+|---|---|---|---|---|
+| **IaaS** (infrastructure) | OS, runtime, app, data | hardware, network | Virtual Machines | EC2 |
+| **PaaS** (platform) | app + data only | OS, patching, scaling, backups | PostgreSQL flexible server, App Service | RDS, Elastic Beanstalk |
+| **Serverless / FaaS** | just the code | everything, scales to zero | **Azure Functions** | Lambda |
+| **SaaS** (software) | nothing, you just use it | everything | Microsoft 365, Power BI | (e.g. QuickSight) |
+
+This project is almost all **PaaS + serverless** (IoT Hub, PostgreSQL flexible server, Functions). That's deliberate: no servers to patch.
+
+### 2. How Azure is organised (the hierarchy)
+
+```
+Microsoft Entra ID tenant      ← my organisation's identity directory ("Default Directory")
+└── Management groups          ← optional folders of subscriptions, for big companies
+    └── Subscription           ← "Azure subscription 1": a billing + access boundary
+        └── Resource group     ← a folder for related resources: rg-tfstate, later rg-iot-...
+            └── Resource       ← one actual thing: a storage account, an IoT Hub, a database
+```
+
+| Azure level | What it is | Closest AWS equivalent |
+|---|---|---|
+| **Entra ID tenant** (formerly Azure AD) | the directory of users, groups, app identities | IAM + IAM Identity Center |
+| **Management group** | groups subscriptions, applies policies to all of them | AWS Organizations, Organizational Units (OUs) |
+| **Subscription** | where costs are billed and limits apply; my Free Trial | an **AWS account** |
+| **Resource group** | a mandatory folder for resources, deleted as a unit | *nothing mandatory*: AWS uses tags, CloudFormation stacks, or separate accounts |
+| **Resource** | a storage account, a hub, a database | a resource (S3 bucket, EC2 instance...) |
+
+**Key Azure difference: resource groups.** Every Azure resource must be in exactly one resource group. That makes "delete everything for this project" a single action (step 3.3 teardown), and it's why the Terraform state lives in its *own* group, `rg-tfstate`. AWS has no direct equivalent, which is one of the first differences people notice when switching.
+
+**Regions and availability zones** work the same way in both clouds:
+- a **region** = a geographic location with data centres, e.g. `northeurope` (Ireland), `westeurope` (Netherlands), `swedencentral`. AWS names them like `eu-west-1` (Ireland), `eu-north-1` (Stockholm);
+- **availability zones** = physically separate data centres *inside* one region, so one fire or power cut doesn't take everything down;
+- why it matters: latency (closer = faster), data residency (EU data staying in the EU), price (differs per region), and not every service or tier exists in every region.
+
+**Azure Resource Manager (ARM)** is the single "front door" API for every create/change/delete in Azure. The portal, `az`, Terraform and Bicep all talk to ARM. (AWS has no single equivalent; each service has its own API.) **Resource providers** (`Microsoft.Storage`, `Microsoft.Devices`...) are the services behind ARM; see the bootstrap log for why they need registering.
+
+### 3. Main service categories: Azure ↔ AWS
+
+| Category | Azure | AWS | Used in this project? |
+|---|---|---|---|
+| Virtual machines | Virtual Machines | EC2 | no |
+| Serverless functions | **Azure Functions** | Lambda | ✅ step 2.4 |
+| Containers (simple) | Container Apps, Container Instances | ECS / Fargate, App Runner | maybe later |
+| Kubernetes | AKS | EKS | no |
+| Object/file storage | **Storage account** (Blob, Files, Queues, Tables) | S3, EFS, SQS, DynamoDB (separate services) | ✅ Terraform state; Function App needs one |
+| Relational database | **Azure Database for PostgreSQL / MySQL**, Azure SQL | RDS, Aurora | ✅ step 2.3 |
+| NoSQL database | Cosmos DB | DynamoDB | no |
+| IoT device gateway | **IoT Hub** | AWS IoT Core | ✅ step 2.2 |
+| Event streaming | Event Hubs | Kinesis, MSK (Kafka) | ✅ indirectly: IoT Hub's built-in endpoint *is* Event Hubs-compatible |
+| Message queues | Service Bus, Storage Queues | SQS, SNS | no |
+| Identity | **Microsoft Entra ID**, managed identities | IAM, IAM roles | ✅ step 3.1 |
+| Access control | **Azure RBAC** (role assignments) | IAM policies | ✅ steps 3.1–3.2 |
+| Guardrails / rules | **Azure Policy** | Service Control Policies, AWS Config | maybe (tier limits) |
+| Secrets | Key Vault | Secrets Manager, Parameter Store | maybe |
+| Monitoring / logs | **Azure Monitor**, Log Analytics, Application Insights | CloudWatch, X-Ray | ✅ step 4.3 |
+| Cost tools | **Cost Management + Budgets** | Cost Explorer + AWS Budgets | ✅ step 1.8 |
+| Networking | Virtual Network (VNet), NSG | VPC, Security Groups | lightly (database firewall) |
+| Native IaC | ARM templates / **Bicep** | CloudFormation / CDK | — (I chose Terraform, which does both clouds) |
+| BI / reporting | Power BI | QuickSight | ✅ step 4.2 |
+
+### 4. Storage options in depth
+
+#### 4.1 The storage account: Azure's storage "container of services"
+In Azure, most storage lives inside a **storage account**: one named resource with a globally unique name (that's why `sttfstatebantos` had to be checked across all of Azure; it becomes part of a web address, `https://sttfstatebantos.blob.core.windows.net`). One storage account offers **four services**:
+
+| Service inside a storage account | What it stores | AWS equivalent |
+|---|---|---|
+| **Blob storage** | any files ("blobs" = binary large objects): images, backups, logs, **Terraform state** | **S3** |
+| **Azure Files** | network file shares a computer can mount like a drive | EFS / FSx |
+| **Queue storage** | simple message queues | SQS (basic) |
+| **Table storage** | simple key-value NoSQL tables | DynamoDB (very basic) |
+
+**Key difference:** AWS has a *separate* service for each (S3, EFS, SQS, DynamoDB). Azure bundles them under one storage account, with shared settings (location, redundancy, security). We only use **Blob storage**.
+
+Blob storage's structure, compared to S3:
+```
+Storage account  (sttfstatebantos)     ≈  the S3 "namespace" (no direct equivalent)
+└── Container    (tfstate)              ≈  an S3 bucket
+    └── Blob     (iot.terraform.tfstate) ≈  an S3 object
+```
+⚠️ A blob **"container" has nothing to do with Docker containers**. Same word, completely different meaning: here it's just a folder for blobs.
+
+#### 4.2 Redundancy: how many copies, where
+Every storage account keeps **multiple copies** of the data. You choose how far apart they are:
+
+| Option | Copies | Survives | Cost |
+|---|---|---|---|
+| **LRS** (locally redundant) | 3 copies in **one data centre** | a disk/server failure | cheapest |
+| **ZRS** (zone-redundant) | 3 copies across **3 availability zones** in one region | a whole data centre going down | more |
+| **GRS** (geo-redundant) | LRS + 3 more copies in a **second region** hundreds of km away | a whole region going down | more again |
+| **GZRS** | ZRS + a second region | both | most |
+
+AWS S3 standard is roughly like ZRS by default (copies across availability zones); cross-region replication is opt-in.
+**For the Terraform state: LRS.** It's tiny, cheap, versioned, and if a whole Azure data centre burned down, I could recreate it.
+
+#### 4.3 Access tiers: how often the data is read
+| Tier | For | Storage price | Read price | AWS S3 equivalent |
+|---|---|---|---|---|
+| **Hot** | data used often | highest | lowest | S3 Standard |
+| **Cool** | rarely read, ≥30 days | lower | higher | S3 Standard-IA |
+| **Cold** | very rarely read, ≥90 days | lower still | higher | S3 Glacier Instant Retrieval (roughly) |
+| **Archive** | almost never; hours to get back | very low | high + slow | S3 Glacier Deep Archive |
+
+Terraform reads its state on every run → **Hot** (the default).
+
+#### 4.4 Other storage you'll hear about
+| Azure | What | AWS |
+|---|---|---|
+| Managed Disks | the hard drive attached to a VM | EBS |
+| Data Lake Storage Gen2 | Blob storage + a real folder hierarchy, for big-data analytics | S3 + Lake Formation |
+| Databases (PostgreSQL, Azure SQL, Cosmos DB) | structured data you *query* | RDS, Aurora, DynamoDB |
+
+**Files vs databases:** blob storage = files you read and write whole (like Terraform state). A database = structured data you query ("average temperature per hour for sensor-01"). That's why the readings go into **PostgreSQL** (step 2.3), not blob storage.
+
+#### 4.5 Securing a storage account (what we'll set on ours)
+- **No public access to blobs**: nobody on the internet can read the state file anonymously. (The AWS equivalent: S3 "Block Public Access", now on by default.)
+- **Minimum TLS 1.2**: refuse old, insecure encryption versions for connections.
+- **Versioning**: every overwrite keeps the previous version, so a corrupted state can be restored. (S3 has the same feature.)
+- **Encryption at rest**: always on in Azure; data on disk is encrypted automatically.
+- Access by **Entra ID roles (RBAC)** or by **account keys** (like a master password for the whole account). Terraform will use my `az login` for now; step 3.2 switches CI to OIDC.
+
+### 5. How the services map onto this project
+
+```
+ sensor → Mosquitto → bridge ──► IoT Hub (Microsoft.Devices)          ≈ AWS IoT Core
+                                     │ built-in Event Hubs endpoint      ≈ Kinesis
+                                     ▼
+                                 Azure Function (Microsoft.Web)          ≈ Lambda
+                                  (needs its own storage account)
+                                     ▼
+                                 PostgreSQL flexible server              ≈ RDS for PostgreSQL
+                                     ▼
+                                 dbt → Power BI                          ≈ dbt → QuickSight
+ Around it: Terraform state in Blob storage (≈ S3), Entra ID + managed identity (≈ IAM roles),
+            Cost Management + budget (≈ AWS Budgets), Azure Monitor (≈ CloudWatch)
+```
+
+### 6. Exercises (predict → run → record)
+
+**1. Where am I in the hierarchy?** *(5 min)*
+```
+az account show --output table       # tenant + subscription
+az group list --output table         # resource groups in my subscription
+```
+Which tenant name do I see, and which resource groups exist? Why is `rg-tfstate` there already?
+
+**2. Regions.** *(5 min)*
+```
+az account list-locations --query "[?metadata.regionCategory=='Recommended'].name" --output tsv
+```
+Is `northeurope` in the list? Find the region closest to Denmark. (`--query` filters Azure's reply; `[?...]` means "only items where...".)
+
+**3. Providers.** *(5 min)*
+```
+az provider list --query "[?registrationState=='Registered'].namespace" --output tsv
+```
+Which providers are registered now? Which ones did *I* register, and which were already on?
+
+**4. Compare in the portal.** *(10 min)*
+Portal → search "Storage accounts" → Create (**don't actually create**, just read the form). Find on the form: region, redundancy (LRS/ZRS/GRS...), performance tier. Which settings from section 4 do I recognise?
+
+**5. Write it in my own words.** *(10 min)*
+Without looking: draw the Azure hierarchy (tenant → subscription → resource group → resource) and write the AWS equivalent next to each level. Then check against section 2.
+
+
+### Bootstrap, continued (28.10.2026)
+
+**Checked the storage account name is free:**
+```
+az storage account check-name --name sttfstatebantos --output table 2>/dev/null
+```
+Result: `NameAvailable: True`. Storage account names are **global across all of Azure** (3–24 characters, lowercase letters and digits only), because the name becomes part of a web address: `https://sttfstatebantos.blob.core.windows.net`. Naming: `st` = storage (Microsoft's naming convention prefix), `tfstate` = what it's for, `bantos` = makes it unique.
+
+**Command 1: create the resource group**
+```
+az group create --name rg-tfstate --location northeurope --output table 2>/dev/null
+```
+- `az group create`: create a resource group, a named folder that every Azure resource must live in. Deleting it deletes everything inside. It costs nothing by itself.
+- `--name rg-tfstate`: `rg-` is the conventional prefix for resource groups.
+- `--location northeurope`: the region (Ireland). A resource group's location is where Azure stores its *metadata*; the resources inside it can technically be elsewhere, but keeping them together is simplest.
+- Result: `northeurope  rg-tfstate` ✅.
+- Why its own group: so deleting the project's resource group later (step 3.3) never deletes the Terraform state.
+
+See [12-azure-fundamentals.md](12-azure-fundamentals.md) for what resource groups, regions and storage accounts are, compared to AWS.
+
+
+### Why create things with `az` (or Terraform) instead of the Azure portal? *(29.10.2026)*
+Same result either way, but commands are:
+1. **Repeatable**: run again identically (step 3.3 rebuilds everything from nothing); portal setups depend on remembering ~30 options.
+2. **Self-documenting**: every setting is visible in the command (`--sku Standard_LRS`, `--allow-blob-public-access false`).
+3. **Reviewable and shareable**: saved in `infra/bootstrap.sh`, committed, readable by others; clicks can't be reviewed.
+4. **Automatable**: scripts and CI (step 3.2) can run commands, not clicks.
+5. **The infrastructure-as-code mindset**: `az` = infrastructure as *commands*, Terraform = infrastructure as a *description*, portal = neither.
+
+The **portal is better for**: exploring which options exist, checking results visually, one-off things, cost and monitoring dashboards.
+**Habit: create with code, inspect in the portal.** In companies, manual portal changes in production ("ClickOps") are discouraged or blocked, because they aren't repeatable or reviewable.
+
+### Is bootstrapping the Terraform state backend with `az` normal? *(29.10.2026)*
+Yes. The state backend is the one piece usually **not** made by the Terraform that uses it (chicken-and-egg). Common options:
+1. a few `az` commands run once, saved in a script (`infra/bootstrap.sh`) ← what I'm doing;
+2. a separate tiny Terraform project with a *local* state file that only creates the storage account;
+3. HCP Terraform (HashiCorp's hosted service) stores state for you, so no storage account is needed.
+
+Everything after the bootstrap is Terraform; `az` is then only for logging in and checking.
+
+
+### What does "bootstrap" mean? *(29.10.2026)*
+**The small first setup that must exist before the normal process can run**, which can't be done *by* the thing it starts.
+- From "pulling yourself up by your own bootstraps" (getting started with nothing to help you). Also where **"booting"** a computer comes from: a tiny built-in program starts first, just to load the operating system.
+- **Here:** Terraform's normal job is creating everything and recording it in its **state file**. The state file needs a storage account to live in, and Terraform can't create its own storage place (chicken-and-egg). So the storage account is created **once, by hand, with `az`**, before Terraform runs. After that, Terraform takes over.
+- Other uses of the word: a *bootstrap script* (first-time project setup, like the Brewfile); *Bootstrap* the CSS framework (unrelated); *bootstrapping a startup* (no outside investors).
+
+**Command 2: create the storage account** *(typed and run by me, 31.10.2026)*
+```
+az storage account create \
+  --name sttfstatebantos \
+  --resource-group rg-tfstate \
+  --location northeurope \
+  --sku Standard_LRS \
+  --kind StorageV2 \
+  --min-tls-version TLS1_2 \
+  --allow-blob-public-access false \
+  --output table
+```
+- `\` at the end of a line = "the command continues on the next line".
+- `--sku Standard_LRS`: SKU = product variant. **Standard** = normal disks (vs Premium SSD); **LRS** = 3 copies in one data centre (cheapest; fine for a small, versioned state file).
+- `--kind StorageV2`: the current general-purpose type (Blob, Files, Queues, Tables).
+- `--min-tls-version TLS1_2`: refuse old, insecure encryption on connections.
+- `--allow-blob-public-access false`: no blob can ever be made publicly readable.
+
+Checked by Claude with a read-only command:
+```
+az storage account show --name sttfstatebantos --resource-group rg-tfstate \
+  --query "{name:name, location:primaryLocation, sku:sku.name, kind:kind, tls:minimumTlsVersion, publicBlobAccess:allowBlobPublicAccess, state:provisioningState}" \
+  --output table
+```
+(`--query "{a:b, ...}"` picks fields from Azure's long JSON reply and gives them short column names.)
+
+| Location | Sku | Kind | Tls | PublicBlobAccess | State |
+|---|---|---|---|---|---|
+| northeurope | Standard_LRS | StorageV2 | TLS1_2 | False | Succeeded ✅ |
+
+Habit: **create with code, inspect in the portal**. Portal → Resource groups → `rg-tfstate` → `sttfstatebantos` → Configuration shows the same settings as checkboxes.
+
+**Command 3: create the `tfstate` container** *(typed and run by me, 31.10.2026)*
+```
+az storage container-rm create --storage-account sttfstatebantos --resource-group rg-tfstate --name tfstate --output table
+```
+- A **blob container** = a folder for blobs (files) inside Blob storage. Like an S3 bucket. **Not** a Docker container. Terraform's state file will live here.
+- `container-rm` = create it through **Azure Resource Manager** (the control plane), where my Owner role is enough. Plain `container create` would use the data plane, which needs a data role or the account key. See "ARM, control plane vs data plane" in [12-azure-fundamentals.md](12-azure-fundamentals.md).
+
+**What went wrong the first time:** I ran a version of the command, but the container didn't exist afterwards. Claude checked with read-only commands:
+```
+az storage container-rm list --storage-account sttfstatebantos --resource-group rg-tfstate --output table    # → empty
+az storage container-rm exists --storage-account sttfstatebantos --resource-group rg-tfstate --name tfstate  # → "exists": false
+```
+Ran it again on **one line** with `!` (so no `\` line break could break while pasting) → `"exists": true` ✅.
+Lesson: **"done" isn't proof**. Check the result with a read-only `show`/`list`/`exists` command after every change.
+
+### 7. ARM (Azure Resource Manager): control plane vs data plane *(31.10.2026)*
+
+**ARM is the single front door for *managing* Azure.** Every create/change/delete/configure request goes through it:
+```
+  Portal (clicks) ─┐
+  az CLI ──────────┤
+  Terraform ───────┼──►  ARM  (https://management.azure.com)  ──►  resource providers
+  Bicep ───────────┤      checks: who are you? are you allowed?       Microsoft.Storage
+  az rest ─────────┘      then forwards the request                   Microsoft.Devices ...
+```
+ARM does three jobs:
+1. **Authentication**: who are you? (`az login`, through Entra ID);
+2. **Authorisation**: are you allowed? (my role: **Owner** of the subscription);
+3. **Routing**: send the request to the right resource provider. That's why an unregistered provider gave "Subscription not found": ARM had nowhere to route it.
+
+**ARM resource ID**, the full address of a resource:
+```
+/subscriptions/b9efd0b9-.../resourceGroups/rg-tfstate/providers/Microsoft.Storage/storageAccounts/sttfstatebantos
+```
+= subscription → resource group → provider → resource type → name. Terraform stores these IDs in its state; that's how it links each code block to a real resource.
+
+**The "two doors" into a service:**
+| | **Control plane** (management) | **Data plane** (contents) |
+|---|---|---|
+| Question | "manage the *thing*" | "use what's *inside*" |
+| Examples | create a storage account or container, change TLS | upload, read or delete a **file** (blob) |
+| Address | ARM: `management.azure.com` | the service's own: `sttfstatebantos.blob.core.windows.net` |
+| Who's allowed | management roles: Owner, Contributor | **data roles** (Storage Blob Data Contributor) **or** the secret access key |
+| CLI | `az storage account create`, `az storage container-rm ...` | `az storage container create`, `az storage blob upload` |
+
+- **Why separate:** "may manage infrastructure" ≠ "may read the data". An admin who sets up finance's storage shouldn't read finance's files. Being **Owner does not by itself grant data access**. (Loophole: Owners can read the **access keys** through ARM, and a key opens the data door. Step 3.1 closes this kind of gap with identities and roles.)
+- **`-rm` in commands** = "through Resource Manager" (the control plane).
+- **Terraform's state:** reading and writing the state file is data plane. For now Terraform fetches the account key via my `az login`; later we switch to roles.
+- **AWS:** has the same split (S3 `CreateBucket` = control, `PutObject` = data), but **one permission system (IAM)** covers both. Azure has **two layers** (management roles + data roles), a classic surprise when switching clouds.
+
+### 8. Blob vs NoSQL vs SQL *(31.10.2026)*
+A blob container is **not** really a NoSQL database. Both store things under a *key* (a name), but they're for different jobs:
+
+| | **Blob container** | **NoSQL DB** (Cosmos DB, DynamoDB, Table storage) | **SQL DB** (PostgreSQL) |
+|---|---|---|---|
+| Stores | **files**: any bytes | **records/documents** with fields | **rows** in tables with fixed columns |
+| Looks inside? | **no**: doesn't know what's in a file | **yes**: find records by fields | **yes**: SQL with joins, averages, filters |
+| Usage | upload/download a file **whole** | get/put records, query by key/field | `SELECT AVG(temp) ... GROUP BY hour` |
+| Item size | huge (TBs per blob) | small (KBs) | small rows, very many |
+| Like | an online folder of files | a searchable filing cabinet | a strict spreadsheet + query language |
+| AWS | S3 | DynamoDB | RDS for PostgreSQL |
+
+The NoSQL option *inside* a storage account is **Table storage** (simple key-value).
+**In this project:** Terraform state = one file read/written whole → **blob**. Sensor readings = data I'll ask questions of (hourly averages, last reading) with a fixed shape (the contract), used by dbt and Power BI → **PostgreSQL**.
+
+### What does "rm" mean in `az storage container-rm`? *(31.10.2026)*
+**RM = Azure Resource Manager (ARM)**, Azure's single front door for *managing* resources (`management.azure.com`). `container-rm` creates the container through ARM, the **control plane**, where my Owner role is enough. Plain `container` uses the **data plane** (the service's own address), which needs a data role or the account's access key. Owner ≠ data access in Azure. → [12-azure-fundamentals.md](12-azure-fundamentals.md), section 7
+
+### Is a blob container like a NoSQL database? *(31.10.2026)*
+No. Blob = **files**, stored and fetched whole; it can't look inside or query them (like S3). NoSQL = **records with fields** you can query (Cosmos DB, DynamoDB, Azure Table storage). SQL = **tables** with full queries (PostgreSQL). Terraform state → blob; sensor readings → PostgreSQL. → [12-azure-fundamentals.md](12-azure-fundamentals.md), section 8
+
+**Command 4: versioning + soft delete** *(typed and run by me, 31.10.2026)*
+```
+az storage account blob-service-properties update --account-name sttfstatebantos --resource-group rg-tfstate --enable-versioning true --enable-delete-retention true --delete-retention-days 7 --output table
+```
+- `blob-service-properties update`: change settings of the account's **Blob service** as a whole (not one file). A control-plane change through ARM, so Owner is enough.
+- `--enable-versioning true`: every overwrite of the state file keeps the previous version, so a broken state can be rolled back.
+- `--enable-delete-retention true --delete-retention-days 7`: **soft delete**. A deleted blob goes to a recycle bin for 7 days before it's really gone.
+- Cost: old versions are a few KB each, practically nothing.
+
+Checked by Claude (read-only):
+```
+az storage account blob-service-properties show --account-name sttfstatebantos --resource-group rg-tfstate \
+  --query "{versioning:isVersioningEnabled, softDelete:deleteRetentionPolicy.enabled, days:deleteRetentionPolicy.days}" --output table
+```
+→ `Versioning True | SoftDelete True | Days 7` ✅
+
+**Bootstrap complete:** `rg-tfstate` → storage account `sttfstatebantos` (Standard_LRS, TLS 1.2, no public access, versioning, soft delete) → container `tfstate`.
+
+### Why blob storage for the Terraform state? *(31.10.2026)*
+The state is **one JSON file**, Terraform's record of everything it created. Where it lives needs:
+| Need | Why | Blob storage provides |
+|---|---|---|
+| **Shared** | laptop and CI (3.2) must use the *same* state, or they fight over resources | one file at one address both can reach |
+| **Durable** | lost state = Terraform forgets what it created | 3 copies (LRS), independent of my laptop |
+| **Locked while in use** | two simultaneous `apply` runs would corrupt it | Terraform takes a **blob lease** (temporary lock); a second run gets "state locked" |
+| **Private** | state can contain **secrets** in plain text | private container, no public access, TLS 1.2 |
+| **Recoverable** | a bad run can break it | versioning + soft delete |
+
+Terraform has a built-in **`azurerm` backend** for this: just name the account, container and file.
+**Alternatives:** a local file (Terraform's default: not shared, no locking, lost with the laptop; experiments only); **git: never** (secrets would be public forever, no locking, merge conflicts; `*.tfstate` goes in `.gitignore`); a database (overkill, and ours is created *by* Terraform: chicken-and-egg); HCP Terraform (hosted, adds an external service).
+**AWS equivalent:** state in an **S3 bucket** with versioning, plus locking (historically a DynamoDB table; newer Terraform can lock in S3 itself).
+
+### Why is the Terraform state stored in blob storage? *(31.10.2026)*
+The state is one JSON file that must be **shared** (laptop + CI), **durable**, **locked** while in use (Terraform takes a blob lease), **private** (it can contain secrets) and **recoverable** (versioning + soft delete). Blob storage does all five, and Terraform's built-in `azurerm` backend uses it directly. Never put state in git (secrets, no locking). AWS: S3 bucket + locking. → [11-terraform.md](11-terraform.md)
+
+
+### Writing `infra/bootstrap.sh` (I wrote it; Claude reviewed it, 31.10.2026)
+
+**What the file is:** the four bootstrap commands (plus provider registration) saved as a script, so the state backend can be rebuilt identically (step 3.3) and anyone can read exactly what was created. **Committed to git**: it contains no secrets.
+
+**Structure I used** (good):
+- `#!/usr/bin/env bash`: the **shebang**. Tells the system to run the file with bash; `env` finds bash wherever it's installed.
+- `set -euo pipefail`: `-e` stop at the first failing command; `-u` stop on unset variables (catches typos); `-o pipefail` a failed part of a `|` pipe fails the whole line. Standard at the top of serious bash scripts.
+- Variables at the top (`LOCATION=...`, no spaces around `=`), a comment block saying what the script is for, a comment above each command.
+
+**Review: bugs in my first version** (found with `bash -n`, a syntax check that runs nothing):
+1. 🔴 **Variables without `$`**: `--name RESOURCE_GROUP` passes the literal text "RESOURCE_GROUP". It would have created a resource group *named* RESOURCE_GROUP, and `--location LOCATION` would fail. Correct: `--name "$RESOURCE_GROUP"` (the quotes protect values containing spaces).
+2. 🔴 **Stray ```` ``` ```` at the end**, left over from copying Markdown. A backtick starts *command substitution* in bash, so bash searched for the closing one: `unexpected EOF while looking for matching ``'`. The script wouldn't even start.
+3. 🔴 **Spaces after `\`**. `\` continues a command only if it's the **very last character** on the line. With trailing spaces it escapes a space instead, and the command ends there (`az storage account create` with no options), so `set -e` stops the script. Probably the same thing that broke my first container command.
+4. 🔴 **Wrong value**: `--resource-group CONTAINER` in the container command; it needs `$RESOURCE_GROUP`.
+5. 🟡 **Hard-coded names** in the last command instead of variables. It works, but a renamed variable wouldn't reach it.
+6. 🟡 **`2>/dev/null` in a script hides real errors.** With `set -e`, a failing command would stop the script with *no message*. Fine for hiding harmless warnings in the terminal; not in scripts.
+7. ⚪ A space before every `\`, 2-space indentation of options, a comment typo.
+
+Correct pattern:
+```bash
+# Create the resource group that holds only the Terraform state
+az group create \
+  --name "$RESOURCE_GROUP" \
+  --location "$LOCATION" \
+  --output table
+```
+Checks that run nothing:
+```
+bash -n infra/bootstrap.sh              # syntax check: silent = OK
+grep -n '\\ \+$' infra/bootstrap.sh     # find "\" followed by spaces: no output = OK
+```
+
+**Open prediction (idempotency):** what happens if the script runs a second time, when everything already exists? To be checked once the script is fixed.
+
+### Why an `infra/` folder?
+A convention separating **application code** (`sensor/`, `bridge/`) from **infrastructure code** (bootstrap + Terraform):
+- Terraform reads **every `.tf` file in the folder it runs in**, so it needs its own folder;
+- one clear place for "how the cloud is built";
+- CI can react by path (e.g. only run `terraform plan` when `infra/` changed, step 3.2).
+
+Other common names: `terraform/`, `iac/`, `deploy/`.
+
+### `chmod` and "executable"
+**`chmod` = change mode = change a file's permissions.** `ls -l` shows them:
+```
+-rwxr-xr-x  1 antoniratajczyk  staff  1712 Oct 31 14:51 bootstrap.sh
+│└┬┘└┬┘└┬┘
+│ │  │  └─ others:  r-x
+│ │  └──── group:   r-x
+│ └─────── owner:   rwx  (me)
+└───────── "-" = regular file ("d" = directory)
+```
+r = read, w = write, x = execute (run as a program). Before: `-rw-r--r--`. `chmod +x` added `x` for owner, group and others, giving `-rwxr-xr-x`.
+
+**Executable** = the system may run the file as a program: `./infra/bootstrap.sh`. macOS then reads the **shebang** to know which program runs it.
+- Without `x`: "permission denied". `bash infra/bootstrap.sh` still works, because then *bash* is the program and the script is just a file it reads.
+- `./` = "in this folder". Without it, the terminal only searches its PATH (`/opt/homebrew/bin`...).
+- **Git stores the `x` bit**, so clones can run the script directly.
+
+
+### Should `bootstrap.sh` be gitignored, since it has names in it? *(31.10.2026)*
+**No, commit it.** Test: *"If a stranger had this file, could they get into anything?"* Names, region and settings aren't secrets. The storage account name is even part of a public URL. Security comes from **authentication** (login, keys, roles), not hidden names. Real secrets (account keys, connection strings, passwords, tokens) must never be in the file, and aren't: the script uses my `az login`, which lives in my user profile. If a script ever needs a secret, it reads it from an environment variable or `.env` at runtime.
+
+### What is `chmod`, and what does "executable" mean? *(31.10.2026)*
+`chmod` = change mode = change file permissions (`r` read, `w` write, `x` execute, for owner / group / others; see them with `ls -l`). `chmod +x file` adds "may be run as a program": `-rw-r--r--` → `-rwxr-xr-x`. Then `./file` runs it, and the shebang (`#!/usr/bin/env bash`) picks the interpreter. Without `x`: "permission denied" (but `bash file` still works). Git keeps the `x` bit. → [11-terraform.md](11-terraform.md)
+
+### Why must `\` be the last character on a line? *(31.10.2026)*
+In bash, `\` + line break = "the command continues on the next line". If any space follows the `\`, it escapes the *space* instead, so the command ends there and the next line runs as a separate (broken) command. Invisible in most editors. Find them with `grep -n '\\ \+$' file`.
+
+### What does `$` do in bash? *(31.10.2026)*
+`NAME="value"` sets a variable; **`$NAME` reads it**. Without `$`, bash uses the literal text `NAME`. Write `"$NAME"` in quotes, so values with spaces stay one argument.
+
+
+### Testing the script with a fake `az` (Claude, 03.11.2026)
+
+After my second version passed `bash -n` and the `grep` check, Claude ran it against a **fake `az`** to see exactly which arguments each call would receive, **without contacting Azure**.
+
+**The idea: a stub.** A stand-in for a real external program that only *prints* what it's given. Same idea as 1.5, where the validator was tested without a broker; here the script is tested without Azure.
+
+**How the swap works: `PATH`.** When a script says `az`, the terminal searches the folders listed in **`PATH`**, in order, and runs the **first** `az` it finds (normally `/opt/homebrew/bin/az`; see `which az`). Put a folder with a different `az` at the *front* of PATH, and the script uses that one.
+
+**The commands:**
+```
+mkdir -p .../scratchpad/fakebin          # a folder for the fake, outside the project (-p: no error if it exists)
+printf '#!/usr/bin/env bash\necho "az called with:"; for a in "$@"; do echo "   [$a]"; done\n' > .../fakebin/az
+chmod +x .../fakebin/az                  # make the fake runnable
+```
+The fake `az` is two lines:
+```bash
+#!/usr/bin/env bash
+echo "az called with:"; for a in "$@"; do echo "   [$a]"; done
+```
+- `"$@"` = **all arguments** the program received, each kept separate exactly as bash split them;
+- `for a in "$@"; do ... done` = loop over them;
+- `echo "   [$a]"` = print each **inside brackets**, so you can *see* where each argument starts and ends (glued words, missing spaces).
+
+Run the script with the fake first in PATH:
+```
+PATH="/private/tmp/claude-501/-Users-antoniratajczyk-Desktop-Project/60d36abb-4847-4ccc-83b7-cab3adc76262/scratchpad/fakebin:$PATH" bash infra/bootstrap.sh
+```
+- `PATH="fakebin:$PATH"` = my folder first, then the normal PATH (`$PATH` = its current value, `:` separates folders);
+- written **before** a command, it applies to **that command only**.
+
+**What it revealed in my second version:**
+| Call | Received | Verdict |
+|---|---|---|
+| Register Storage | `[--namespace] [Microsoft.Storage]` | ✅, but `--wait` was commented out |
+| Register Devices | `[--namespace] [Microsoft.Devices#--wait]` | 🔴 |
+| Group create | `[--name] [rg-tfstate--location] [northeurope]` | 🔴 |
+| Storage account | all options correct | ✅ |
+| Container | `[--storage-account] [STORAGE_ACCOUNT]` | 🔴 missing `$` |
+| Versioning | right values, typed out | 🟡 not using variables |
+
+- **Devices:** `Microsoft.Devices\` had **no space before `\`**, so bash glued it to the next line `#--wait 2>/dev/null`, giving `Microsoft.Devices#--wait 2>/dev/null`. **A `#` only starts a comment after a space**; glued to a word, it's an ordinary character. And the `2>/dev/null` became *active*, so the error would be thrown away and `set -e` would stop the script **silently**.
+- **Group:** `"$RESOURCE_GROUP"\` without a space glued onto `--location`, making the name `rg-tfstate--location`, with `northeurope` left over as a stray argument.
+- **Commenting out continuation lines** works only by accident (when there's a space before the `#`). And removing `--wait` means registration continues in the background, so on a new subscription the next command could start too early. Keep `--wait`, drop only `2>/dev/null`, and delete leftover lines instead of commenting them out.
+
+**Three levels of checking a script:**
+| Check | Catches |
+|---|---|
+| `bash -n script.sh` | bash can't even *read* it (e.g. the stray ```` ``` ````) |
+| `grep -n '\\ \+$' script.sh` | invisible spaces after `\` |
+| **fake `az` in PATH** | it runs but **sends the wrong arguments** (glued words, missing `$`, wrong values) |
+
+
+### What is `PATH`? *(03.11.2026)*
+The list of folders the terminal searches, **in order**, when you type a program name (`az`, `pytest`, `terraform`). It runs the **first** match. See it with `echo $PATH`; see which match wins with `which az`.
+- Activating the venv puts `.venv/bin` first, which is why `pytest` is found then.
+- `NAME=value command` sets a variable **for that one command only**; e.g. `PATH="mydir:$PATH" bash script.sh` makes the script find programs in `mydir` first.
+
+### What is a stub / fake (like the fake `az`)? *(03.11.2026)*
+A stand-in for a real external program or service, used to test *your* code without the real thing. The fake `az` only printed its arguments (`"$@"`, each in `[brackets]`), revealing that the script would send `Microsoft.Devices#--wait` and `rg-tfstate--location`. Same idea as testing the validator without a broker (1.5). → [11-terraform.md](11-terraform.md)
+
+### When is `#` a comment in bash? *(03.11.2026)*
+Only at the start of a word: at the beginning of a line or **after a space**. Glued to a word (`Devices#--wait`) it's an ordinary character.
+
+
+### Why does `bash -n` say "syntax OK" no matter what I put in the script? *(03.11.2026)*
+Because it only checks **grammar, not meaning**, and it **runs nothing**. It checks that bash can *read* the script (complete quotes, backticks, `if`/`fi`, `do`/`done`), not whether commands exist, variables are set or arguments make sense. Like a grammar checker accepting "The purple car ate seventeen Tuesdays".
+- My experiment: `$HUJ` → `bash -n` says OK (valid grammar). **Running** it → `HUJ: unbound variable`: that's `set -u` stopping at *runtime* on an unset variable (without `-u` it would silently become empty).
+- It catches: unclosed `"` or backtick (like the stray ```` ``` ````), `if` without `fi`, `do` without `done`, a stray `(`.
+- So use all three checks: `bash -n` (grammar) → `grep -n '\\ \+$'` (spaces after `\`) → fake `az` (real behaviour: glued words, missing `$`, unset variables). Only real `az` can confirm Azure accepts the arguments.
+
+
+### Third version: all checks pass (03.11.2026)
+- `bash -n` → syntax OK; `grep` → no spaces after `\`; **fake `az`** → all six calls receive exactly the right arguments, `--wait` back on both registrations.
+- `grep -n "sttfstatebantos\|rg-tfstate\|northeurope" infra/bootstrap.sh` → the names appear **only in the variables** (lines 15–18), so a rename is a one-line change.
+
+### The script ran "in a loop": infinite recursion
+When I ran the real script, it never finished. **Cause:** a line `./infra/bootstrap.sh` had ended up *inside* the script (probably pasted by accident), so **the script called itself**: run commands → reach that line → start a new copy from the top → ... forever. **Infinite recursion** = something that calls itself with no condition to stop. Each copy waits for its child, and the child never finishes. The last command (versioning) never ran, because every copy got stuck before it.
+- Stop a runaway script with **Ctrl+C** (maybe several times for a self-calling one).
+- The fake test didn't catch it, because the line was added *after* the last test. **Re-check after every edit.**
+
+**Damage check (read-only, by Claude):**
+```
+az group list --query "[].{name:name, location:location}" --output table
+az storage account list --query "[].{name:name, group:resourceGroup, sku:sku.name, tls:minimumTlsVersion}" --output table
+az storage container-rm list --storage-account sttfstatebantos --resource-group rg-tfstate --query "[].name" --output tsv
+az storage account blob-service-properties show --account-name sttfstatebantos --resource-group rg-tfstate --query "{versioning:isVersioningEnabled, softDelete:deleteRetentionPolicy.enabled, days:deleteRetentionPolicy.days}" --output table
+```
+→ still exactly **one** resource group, **one** storage account (same settings), **one** container; versioning and soft delete still on. Nothing damaged.
+
+### Idempotency, proven by accident
+**Idempotent** = running something once or ten times gives the **same end result** (2.1 question). It matters because infrastructure scripts get re-run: after a failure halfway, by CI on every push, or by someone unsure whether it already ran.
+- The loop re-ran the first five commands many times against resources that **already existed**. With `set -e`, the first failing command would have stopped everything, so every re-run **succeeded**, and nothing was duplicated.
+- Why: `az group create`, `storage account create`, `container-rm create` go through ARM as **"make sure this exists with these settings"** (an HTTP PUT), not "add another one". Re-registering a provider = already registered, nothing to do. The versioning command *sets* values, so setting the same values again changes nothing.
+- Counter-example: "append a line to a file" is **not** idempotent. Ten runs = ten lines.
+- This is also the core of Terraform: you describe the *end state*, and running `apply` again on an unchanged setup does nothing ("No changes").
+
+
+### Why did my script run "in a loop"? *(03.11.2026)*
+It contained the line `./infra/bootstrap.sh`, so it **called itself**: every copy started a new copy, forever (**infinite recursion**). Stop with Ctrl+C. Nothing was damaged, because every command in it is idempotent. → [11-terraform.md](11-terraform.md)
+
+### What does "idempotent" mean? *(03.11.2026)*
+Running it once or ten times gives the **same end result**. Azure's create commands go through ARM as "make sure this exists like this" (PUT), so re-running them changes nothing. Not idempotent: "append a line to a file". Terraform is built on this idea: `apply` on an unchanged setup = "No changes".
+
+
+### Final version: the real run (run by Claude at my request, 03.11.2026)
+Checks first: `bash -n` OK; `grep` found no spaces after `\` and **no self-call**; fake `az` → **exactly 6 calls** (`... | grep -c "az called with"` counts them).
+
+Real run:
+```
+./infra/bootstrap.sh 2>&1 | grep -v "SyntaxWarning\|excludedActions\|^\s*$"
+```
+(`2>&1` merges warnings into the normal output; `grep -v` shows everything **except** lines matching the known `az` noise and empty lines (`^\s*$`). Only for readability; the script itself shows everything.)
+
+| Command | Result |
+|---|---|
+| 2× provider register | finished silently (already registered) |
+| resource group | `northeurope rg-tfstate` |
+| storage account | `WARNING: A storage account with the provided name sttfstatebantos is found. Will continue to update the existing account.` → `Succeeded` |
+| container | `tfstate`, `Deleted: False` |
+| versioning | `IsVersioningEnabled: True` |
+
+- **The warning is idempotency in Azure's own words**: it exists, so it just makes sure the settings match.
+- `CreationTime: 2026-10-29`: still the **same** account from Thursday, not a new one.
+- All settings match: Hot tier, no public blob access, HTTPS only, TLS 1.2, `Succeeded`.
+
+**Bootstrap done.** `infra/bootstrap.sh` is the documented, repeatable recipe for the state backend; committed to git (no secrets in it).

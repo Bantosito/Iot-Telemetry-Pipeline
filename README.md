@@ -149,15 +149,20 @@ The whole message must stay under **512 bytes**. The IoT Hub free tier counts me
 
 **Milestone:** a reading sent at home ends up as a row in a PostgreSQL table in Azure.
 
-## 2.1 Infrastructure as code (Bicep)
+## 2.1 Infrastructure as code (Terraform)
 
-**What it is:** instead of clicking resources together in the portal, you describe them in a file, and Azure creates exactly that. The file is the documentation, it can be reviewed, and you can delete everything and recreate it identically. This is the skill you didn't get to own at Everllence.
+**What it is:** instead of clicking resources together in the portal, you describe them in a file, and Azure creates exactly that. The file is the documentation, it can be reviewed, and you can delete everything and recreate it identically.
 
-**Build:** a `main.bicep` for a resource group deployment, starting with the IoT Hub, plus the budget from 1.8 rewritten as a subscription-level Bicep file. Deploy with the Azure CLI (`az deployment ...`).
+*Decision (28.10.2026): Terraform instead of the originally planned Bicep. It's multi-cloud, far more common in job postings, and teaches state management. Bicep (Azure-only, no state file) is compared in `NOTES.md`.*
 
-**Done when:** you can deploy it, delete the resource group, and deploy it again with the same result.
+**Build:**
+- A **remote state backend**: an Azure Storage account that holds Terraform's state file, created once by a small bootstrap step.
+- A Terraform configuration in `infra/` with the resource group and the IoT Hub, plus the budget from 1.8 rewritten as code at subscription level.
+- Deploy with `terraform plan` (preview) and `terraform apply`.
 
-**Questions:** What's a resource group? What does "idempotent" mean, and why does it matter here? Why must some resource names be globally unique, and how do you generate one?
+**Done when:** you can `apply` it, `destroy` it, and `apply` it again with the same result, and `plan` on an unchanged setup says "No changes".
+
+**Questions:** What's a resource group? What does "idempotent" mean, and why does it matter here? Why must some resource names be globally unique, and how do you generate one? What is Terraform state, why store it remotely, and what's in it that makes it sensitive?
 
 ## 2.2 IoT Hub
 
@@ -173,7 +178,7 @@ The whole message must stay under **512 bytes**. The IoT Hub free tier counts me
 
 **What it is:** where the readings are stored. A managed database: Azure handles backups and updates.
 
-**Build:** an Azure Database for PostgreSQL flexible server, Burstable B1ms (check it's covered by your free account), in Bicep. Design the raw readings table yourself: which columns, which types, what the primary key is, and how to stop the same reading being inserted twice.
+**Build:** an Azure Database for PostgreSQL flexible server, Burstable B1ms (check it's covered by your free account), in Terraform. Design the raw readings table yourself: which columns, which types, what the primary key is, and how to stop the same reading being inserted twice.
 
 **Done when:** you can connect from your laptop and query an empty table you created.
 
@@ -183,7 +188,7 @@ The whole message must stay under **512 bytes**. The IoT Hub free tier counts me
 
 **What it is:** a small piece of code that Azure runs whenever something happens, here whenever a message reaches the IoT Hub. You don't manage a server. You've used these at Everllence; the new part is defining and deploying it yourself.
 
-**Build:** a Python Function triggered by IoT Hub messages (via its built-in Event Hub-compatible endpoint) that writes each reading into Postgres. Add the Function App to your Bicep.
+**Build:** a Python Function triggered by IoT Hub messages (via its built-in Event Hub-compatible endpoint) that writes each reading into Postgres. Add the Function App to your Terraform.
 
 **Done when:** a reading sent at home appears as a row within a minute. **That's the week 2 milestone.**
 
@@ -209,7 +214,7 @@ The whole message must stay under **512 bytes**. The IoT Hub free tier counts me
 
 **What it is:** GitHub Actions deploying to Azure. OIDC (federated credentials) lets GitHub prove to Azure which repository and branch is asking, so no long-lived secret is stored in GitHub.
 
-**Build:** a workflow that, on push to `main`, validates the Bicep, deploys it, then deploys the Function code. Set up the federated credential in Microsoft Entra.
+**Build:** a workflow that, on push to `main`, runs `terraform plan`, applies it, then deploys the Function code. Set up the federated credential in Microsoft Entra.
 
 **Done when:** a push to main updates Azure with no manual steps, and no Azure password or secret key is stored in GitHub.
 
@@ -281,5 +286,6 @@ What I'd do differently:
 - paho-mqtt (Python): https://pypi.org/project/paho-mqtt/
 - Docker Compose: https://docs.docker.com/compose/
 - GitHub Actions: https://docs.github.com/actions
-- Azure IoT Hub, Bicep, Functions, PostgreSQL flexible server, managed identities: search each name on https://learn.microsoft.com
+- Terraform (azurerm provider): https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs
+- Azure IoT Hub, Functions, PostgreSQL flexible server, managed identities: search each name on https://learn.microsoft.com
 - dbt: https://docs.getdbt.com/
