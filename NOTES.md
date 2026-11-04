@@ -1999,3 +1999,145 @@ Real run:
 - All settings match: Hot tier, no public blob access, HTTPS only, TLS 1.2, `Succeeded`.
 
 **Bootstrap done.** `infra/bootstrap.sh` is the documented, repeatable recipe for the state backend; committed to git (no secrets in it).
+
+
+## Step 2.1 — Terraform, part 2: first files (explained by Claude, 03.11.2026)
+
+Checkpoint commit (done by me): `fff538a`, with `infra/bootstrap.sh`, `Brewfile`, `README.md` and `NOTES.md`. CI green. `git ls-files -s infra/bootstrap.sh` → `100755`: git stored the executable bit (`755` = `rwxr-xr-x`). The typos in the message stay, because pushed history isn't rewritten.
+
+### Terraform from zero
+I write **`.tf` files describing the end state**; Terraform makes Azure match.
+| Command | What it does |
+|---|---|
+| `terraform init` | one-time setup per folder: downloads the **provider** (plugin that talks to Azure) and connects to the state backend |
+| `terraform plan` | **preview**: compares files + state + real Azure, prints what it *would* create/change/destroy; changes nothing |
+| `terraform apply` | does what the plan said, after I type `yes` |
+| `terraform destroy` | deletes everything this configuration created |
+
+**HCL**, the file format, is made of blocks:
+```hcl
+block_type "label" {
+  argument = "value"
+  nested_block {
+    other_argument = 123
+  }
+}
+```
+- Terraform reads **every `.tf` file in the folder as one configuration**; splitting into files is only for humans. Convention: `versions.tf` (settings + providers), `main.tf` (resources), later `variables.tf`, `outputs.tf`.
+- Strings in `"quotes"`, `=` assigns, `#` comments.
+
+### Task 1: `.gitignore` for Terraform
+```
+.terraform/        # downloaded provider plugin: big, machine-specific, re-downloaded by init
+*.tfstate          # state files: may contain secrets (ours lives in Azure; this guards against local copies)
+*.tfstate.*        # state backups
+crash.log          # written if Terraform crashes
+```
+**Commit `.terraform.lock.hcl`**: it records the exact provider version, so the laptop and CI use the same one (like pinned `requirements.txt`).
+
+### Task 2: `infra/versions.tf`, two blocks
+**`terraform { ... }`**, settings for Terraform itself:
+- `required_version = ">= 1.9"`: refuse older Terraform versions.
+- `required_providers { azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" } }`:
+  - `azurerm` = the **Azure Resource Manager provider**: turns `.tf` files into ARM requests;
+  - `source` = download from the Terraform Registry, publisher `hashicorp`;
+  - `~> 4.0` = **pessimistic constraint**: any 4.x, never 5.0 (major versions may break things; upgrade on purpose).
+- `backend "azurerm" { ... }`: **where the state lives** (= the bootstrap):
+  | Argument | Value |
+  |---|---|
+  | `resource_group_name` | `"rg-tfstate"` |
+  | `storage_account_name` | `"sttfstatebantos"` |
+  | `container_name` | `"tfstate"` |
+  | `key` | `"iot.terraform.tfstate"`, the state file's name inside the container |
+  - **The backend block can't use variables**: Terraform reads it before anything else exists.
+
+**`provider "azurerm" { features {} }`**: settings for the Azure plugin. `features {}` is required, even empty.
+
+**Subscription ID via an environment variable** (azurerm v4 requires it; not a secret, but no reason to publish it):
+```
+export ARM_SUBSCRIPTION_ID=$(az account show --query id --output tsv)
+```
+- `$(...)` = run the inner command and paste its output;
+- `export NAME=value` = set it for this terminal session and every program started from it;
+- the provider reads `ARM_SUBSCRIPTION_ID` automatically. **Per terminal tab**, like the venv.
+
+### Then
+```
+cd infra
+terraform init
+```
+Expected: "Successfully configured the backend azurerm!", "Installing hashicorp/azurerm v4.x.x", "Terraform has been successfully initialized!". Creates `.terraform/` and `.terraform.lock.hcl`.
+
+
+### Why don't I see any files after `terraform init`? *(03.11.2026)*
+Two separate reasons to check:
+1. **Hidden files.** Names starting with a dot (`.terraform/`, `.terraform.lock.hcl`, `.gitignore`, `.venv/`) are **hidden** by `ls` and Finder. `ls -la` shows them: `-a` = all files including hidden, `-l` = long list with permissions and sizes. (In Finder: Cmd+Shift+. toggles hidden files.)
+2. **`init` in a folder with no `.tf` files** doesn't fail. It prints "Terraform initialized in an empty directory!" and creates **nothing**. In my case `versions.tf` had never been saved, so `infra/` contained only `bootstrap.sh`. Checked with:
+```
+ls -la infra/                                    # what's really in the folder
+find . -name "*.tf" -not -path "./.venv/*"       # search the project for .tf files
+```
+In VS Code, an **unsaved** tab shows a dot (●) instead of ✕. Create files by right-clicking the folder → New File, then Cmd+S.
+
+
+### The big picture of step 2.1 (the "builder" analogy)
+- **`.tf` files = the blueprint**: I write what should exist.
+- **Terraform = the builder**: reads the blueprint, builds it in Azure.
+- **State file = the builder's notebook**: "I built X, it's at Y". Without it the builder forgets what it built.
+- **Bootstrap = the shelf for the notebook**: the storage account, built first, by hand.
+
+| # | Step | Analogy |
+|---|---|---|
+| A | bootstrap (`infra/bootstrap.sh`) | build the shelf |
+| B | `infra/versions.tf` | which **toolbox** (azurerm plugin) + **where the notebook is** (backend). Creates nothing in Azure |
+| C | `terraform init` | fetch the toolbox, open the notebook |
+| D | `infra/main.tf` + `plan` + `apply` | the first real blueprint: a resource group |
+| E | IoT Hub + budget in code | more blueprint |
+| F | `destroy` → `apply` → `plan` says "No changes" | README "done when" |
+
+### Writing `versions.tf`: my mistakes and fixes (04.11.2026)
+1. `required version` → **`required_version`**. Argument names never contain spaces.
+2. Missing `backend "azurerm"` block.
+3. `provider "azurerm"` was *inside* `terraform { }` and had no `{ }`. It's a **separate block after** `terraform` closes, with `features {}` inside.
+4. Typo `storage_acount_name` → `storage_account_name`. Terraform only accepts exact argument names ("unsupported argument").
+5. I put `infra/versions.tf` in `.gitignore`, thinking it held secrets. **Wrong: it only has names and versions, and must be committed** (or CI can't run Terraform). `.gitignore` gets Terraform's **generated** files instead: `.terraform/`, `*.tfstate`, `*.tfstate.*`, `crash.log`.
+   **Rule:** commit what *I write* (`.py`, `.tf`, `.sh`, Dockerfile, `.yml`); ignore what's **generated** (`.venv/`, `__pycache__/`, `.terraform/`) and **real secrets** (`.env`, `*.tfstate`).
+
+Every `{` needs a matching `}`. The file is two blocks side by side:
+```
+terraform {          ← block 1 opens: version, required_providers, backend
+}                    ← block 1 closes
+provider "azurerm" { ← block 2 opens
+  features {}
+}                    ← block 2 closes
+```
+
+**`terraform fmt`**: rewrites `.tf` files in Terraform's one official style (2-space indent, aligned `=`), like `ruff --fix` for Python. `terraform fmt -check -diff` only *shows* differences, changing nothing.
+
+### `terraform init` + `terraform plan` (04.11.2026)
+I ran `init` (without the `export`), then `plan`:
+```
+Acquiring state lock. This may take a few moments...
+No changes. Your infrastructure matches the configuration.
+Releasing state lock. This may take a few moments...
+```
+- **Why "No changes":** the blueprint is still empty. `versions.tf` is only settings, with no resources. Plan compared my files ("nothing should exist"), the state ("nothing built") and Azure (only resources Terraform *manages*: none), so there was nothing to do. Correct starting point.
+- Terraform ignores `rg-tfstate` and the storage account, because the bootstrap made them with `az` and they aren't in its state. Deliberate.
+- **`Acquiring/Releasing state lock`** = the blob **lease** (locking) seen live: no second run could change the state meanwhile.
+
+What `init` created (checked by Claude, read-only):
+```
+ls -la infra/                                       # .terraform/ and .terraform.lock.hcl appeared (hidden: start with a dot)
+az storage blob list --account-name sttfstatebantos --container-name tfstate --auth-mode key \
+  --query "[].{name:name, size:properties.contentLength}" --output table
+```
+- `.terraform/` = the downloaded plugin (gitignored).
+- `.terraform.lock.hcl` = **azurerm 4.81.0** locked (within `~> 4.0`). **Commit it.**
+- In Azure: **`iot.terraform.tfstate`, 181 bytes**, the `key` from `versions.tf`. A near-empty notebook. Backend proven end to end.
+- (`--auth-mode key` = read the blob list using the account key, which `az` fetches through ARM because I'm Owner: the "data door" from the Azure guide §7.)
+
+**Why it worked without `export ARM_SUBSCRIPTION_ID`:** with no resources, the provider never made Azure requests, so it never needed the subscription ID; the backend used my `az login` directly. Once `main.tf` has a resource, the provider needs it, so `export` first.
+
+### Quick questions (04.11.2026)
+- **Why "No changes" after `init`?** No resources described yet; `versions.tf` is only settings. Terraform only manages resources in its own state, so the bootstrap resources are ignored.
+- **What goes in `.gitignore`?** Commit what I write (incl. `.tf` and `.terraform.lock.hcl`); ignore generated files (`.venv/`, `.terraform/`) and real secrets (`.env`, `*.tfstate`).
