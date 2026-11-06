@@ -2141,3 +2141,54 @@ az storage blob list --account-name sttfstatebantos --container-name tfstate --a
 ### Quick questions (04.11.2026)
 - **Why "No changes" after `init`?** No resources described yet; `versions.tf` is only settings. Terraform only manages resources in its own state, so the bootstrap resources are ignored.
 - **What goes in `.gitignore`?** Commit what I write (incl. `.tf` and `.terraform.lock.hcl`); ignore generated files (`.venv/`, `.terraform/`) and real secrets (`.env`, `*.tfstate`).
+
+
+### Step D: the first real resource (05.11.2026)
+`infra/main.tf`, written by me:
+```hcl
+resource "azurerm_resource_group" "main" {
+  name     = "rg-iot-telemetry"
+  location = "northeurope"
+  tags = {
+    project    = "iot-telemetry"
+    managed_by = "terraform"
+  }
+}
+```
+- `resource "TYPE" "LOCAL_NAME"`: **TYPE** = what kind of Azure thing (always starts with the provider name: `azurerm_...`); **LOCAL_NAME** = a nickname used *only inside Terraform code*, not the Azure name. Usually `"main"` for the main one of its type.
+- **Address** = `TYPE.LOCAL_NAME` = `azurerm_resource_group.main`; it appears in plan output and the state.
+- `name` = the **real Azure name** (seen in the portal).
+- `tags` = a **map** of `key = "value"` labels: filter costs by tag in Cost Management; `managed_by = "terraform"` tells portal users not to change it by hand.
+
+Ran: `export ARM_SUBSCRIPTION_ID=...` → `terraform plan` (`+` = will be created, `Plan: 1 to add`) → `terraform apply` (type `yes`) → `terraform plan` again.
+
+### Seeing infrastructure from Terraform's point of view
+All **read-only**; they read the state (the builder's notebook) and change nothing:
+| Command | Shows |
+|---|---|
+| `terraform state list` | every managed resource, by address (the table of contents) |
+| `terraform state show <address>` | all stored details of one resource |
+| `terraform show` | the whole state, readable |
+| `terraform output` | outputs I define (none yet) |
+| `terraform graph` | the dependency map in DOT format; picture with Graphviz: `terraform graph \| dot -Tpng > graph.png` (needs `brew install graphviz`) |
+| `terraform providers` | which plugins the configuration uses |
+| `terraform plan` | code vs reality: what *would* change |
+
+My state now:
+```
+$ terraform state list
+azurerm_resource_group.main
+
+$ terraform state show azurerm_resource_group.main
+resource "azurerm_resource_group" "main" {
+    id         = "/subscriptions/b9efd0b9-.../resourceGroups/rg-iot-telemetry"
+    location   = "northeurope"
+    managed_by = null
+    name       = "rg-iot-telemetry"
+    tags       = { "managed_by" = "terraform", "project" = "iot-telemetry" }
+}
+```
+- **`id`** = the **ARM resource ID** (Azure guide §7): how Terraform links the code block to the real resource. It was `(known after apply)` in the plan, because Azure assigns it on creation.
+- **`managed_by = null` ≠ my tag**: it's a built-in Azure property ("which Azure service manages this group"), normally empty. My tag is inside `tags`. Same words, different things.
+- `[90m` in raw output = terminal **colour codes** (grey text).
+- Portal view: Resource groups → `rg-iot-telemetry` → Tags shows the same tags from Azure's side.
