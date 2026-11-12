@@ -30,3 +30,4 @@ notes/
 *.tfstate
 *.tfstate.*
 crash.log
+terraform.tfvars

@@ -2192,3 +2192,475 @@ resource "azurerm_resource_group" "main" {
 - **`managed_by = null` ≠ my tag**: it's a built-in Azure property ("which Azure service manages this group"), normally empty. My tag is inside `tags`. Same words, different things.
 - `[90m` in raw output = terminal **colour codes** (grey text).
 - Portal view: Resource groups → `rg-iot-telemetry` → Tags shows the same tags from Azure's side.
+
+
+### Step 2.1: questions to answer (in my own words)
+
+**README questions (the gate before step 2.2):**
+
+1. What's a resource group?
+    Resource group is a folder for realated resources, It is required that a resource lives in exactly one resource group. Deleting a resource group deletes all the resources inside of it.
+
+2. What does "idempotent" mean, and why does it matter here?
+    Idempotent is a function/action that can be applied multiple times without changing the end result more than once. It matters here, in terms of IaC where terraform apply is an idempodent fucntion as It will always compare the configuration to existing infrastructure and only create new resources if there are differeances. Running terraform apply will not create indefinate resources which is crucial as it would generate unwanted costs.
+
+3. Why must some resource names be globally unique, and how do you generate one?
+    They need to be globally unique as they become a part of a web adress which will be used to called this resource. This is required to avoide ambiguities. It is generated trhough a naming convention by combining st + purpose + initials which is readable. Terraform can also generate a ranodm suffix which is harder to read. The readable name should be used for main resources and resources groups that will be called individualily (by hand/in code) randomized can be used for more covered resources like networking.
+
+4. What is Terraform state, why store it remotely, and what's in it that makes it sensitive?
+    Terraform state is a record of everythhing it created to be able to compare its state to any requested changes and assure single source of thruth. It's stored remotely so that CI and my Laptop can make sure that these infrastructure versions are the same. Shared - CI and Laptop can read and write the same state file to know what already exists. Lock - state lock stops from changing the resoursec more then once at the time. Durable stores this state even if local version dies.
+    Terraform saves every setting of every resource, including resource keys, in plain text. So anyone who can read the state file can get unauthorized access to resources. That's why I protected it with the bootstrap.sh where we create tfstate storage account where we store terraforme state which is kept in the azure.
+
+
+**Questions from the build (asked by Claude along the way):**
+
+5. Before running `bootstrap.sh` a second time, I predicted what would happen to each command when everything already existed. What actually happened, and was I right?
+    Running bootstrap.sh a second time returns found resources and does not create them again ( I think, from what i can see)
+
+6. After `terraform apply` created the resource group, what did the second `terraform plan` say? What did I predict, and why does it say that?
+The second terraform plan returns no changes, your infrastructure  matches the configuration as predicted as we just applied the infrastracture changes matching the changes to actual state.
+*(Claude's note: plan compares three things: my code, the state and the real resource in Azure. Right after apply all three agree, so "No changes". That's idempotency in Terraform.)*
+
+7. Why doesn't Terraform touch `rg-tfstate` and the storage account, even though they're in the same subscription?
+    rg-tfstate was created manually througgh bootstrap. Terraform only manages resources that are listed inside of it and logs changes in files stored in storage account.
+
+8. In `terraform state show`, what's the difference between `managed_by = null` and my `managed_by = "terraform"` tag?
+    Managed by terraform tag suggets that this resource is managed by terraform and therefore should not be touched manually. It is a good practice in IaC. managed_by = null is a built in azure property -> which Azure services manages this group. These two are different despite similar naming.
+
+**More build questions (step E, IoT Hub):**
+
+9. In the `terraform plan` for the IoT Hub: how many resources to add, and is the resource group mentioned at all? Why (or why not)?
+
+    Before terraform apply there was one resource to add the iot_hub. Resource group name is mentioned as we are refering it directly in main.tf through azurerm_resource_group.main.name
+
+10. Is the IoT Hub marked `+` (create) or `~` (change) in the plan, and what does each symbol mean?
+
+    The iot hub is marked + as new resource is being created. It would be change ~ if the resource was alternated. 
+
+11. After `apply`, what does `terraform state list` show? How did Terraform know to create the resource group *before* the hub (on first creation) and delete it *after* (on destroy)?
+
+    After apply terraform shows the two managed resources by terraform. Creation of the hub relies on the previously created resource group by reffering to its name and location.
+
+12. After the IoT Hub exists, run `terraform state show azurerm_iothub.main` and look for `shared_access_policy`. What do you find there, and what does it tell you about why the state file is sensitive (question 4c)?
+
+    In there you find primary and secondary keys to all use keys, which if leaked can cause unathorized movement in the IOT hub
+
+13. (Think about this before step 2.2) Why is the bridge registered as **one** device in IoT Hub, instead of each sensor being its own device? Consider the F1 limits (one hub, 8,000 msgs/day in total) and what each sensor would need to connect to Azure directly.
+
+    In our setup each sensor goes through mqtt gateway which passes these messages to the IOT hub. Therefore we need only one device and hub. We however are not using over 8000mgs per day if we are sending one message every 30 seconds. We are techincally can connect these devices directly as each device would receive their own identity.
+
+
+### Claude's review of my 2.1 answers (06.11.2026)
+| # | Verdict | Feedback |
+|---|---|---|
+| 1 | 🟡 | "Folder" ✅, but **not a form of tag**: tags are separate labels. A resource group is a **mandatory container**: every resource is in exactly one, and **deleting the group deletes everything in it** (teardown in 3.3). Also a boundary for permissions and cost views. |
+| 2 | ✅ | Correct. Addition: apply also *changes or deletes* to match the code, not only creates. |
+| 3 | 🟡 | *Why* ✅ (part of a web address). Missing *how*: naming convention + **unique suffix** (`st` + purpose + initials), or a random suffix generated by Terraform (`random_string`), checked with `az storage account check-name`. |
+| 4 | 🟡 | Missing **why remote**: shared (laptop + CI), locked, durable. **Why sensitive**: not designed as a secret store; Terraform saves *every attribute*, some of which are keys or passwords **in plain text**. Real secrets belong in Key Vault. |
+| 5 | ✅ | Right. Proof: the "is found. Will continue to update" warning, unchanged `CreationTime`, still one of each resource. |
+| 6 | ✅ | |
+| 7 | 🔴 | Terraform **does not change** `rg-tfstate` or the storage account. It only manages what's **in its state**, and those were made by `az`. It only reads/writes the **state file inside** the container: it *uses* the storage, it doesn't *manage* it. `destroy` skips them because they're not in the state, not because Terraform knows it needs them. In the same state, `destroy` would delete them, which is why the bootstrap is separate. |
+| 8 | 🟡 | Tag ✅. Missing: `managed_by = null` is a **built-in Azure property** (which Azure *service* manages the group), normally empty. Unrelated to my tag. |
+
+→ For 1, 3, 4, 7, 8: add a **"Second try:"** below my first answer.
+
+### Step E: the IoT Hub in Terraform (explained by Claude, 06.11.2026)
+**IoT Hub** = Azure's front door for devices; each device gets its own identity, which fixes the playground's spoofing problem (step 2.2). Terraform creates the hub now; registering the bridge as a device comes in 2.2.
+
+**References between blocks:**
+```hcl
+resource_group_name = azurerm_resource_group.main.name
+```
+= "the `name` of the resource at address `azurerm_resource_group.main`". Pattern: `TYPE.LOCAL_NAME.ATTRIBUTE`, **no quotes** (a reference, not text).
+1. **One source of truth**: rename in one place, everything follows.
+2. **Implicit dependency**: because the hub refers to the group, Terraform creates the group first and destroys in reverse. It's the arrow in `terraform graph`.
+
+**The `azurerm_iothub` block** (type `azurerm_iothub`, local name `main`):
+| Argument | Value | Meaning |
+|---|---|---|
+| `name` | `"iot-telemetry-bantos"` | globally unique, because it becomes `iot-telemetry-bantos.azure-devices.net` |
+| `resource_group_name` | reference to the group's `name` | |
+| `location` | reference to the group's `location` | |
+| `tags` | the same two tags | |
+| `sku { name = "F1"  capacity = 1 }` | nested block | **F1 = free tier**, 8,000 msgs/day (the reason for the 30 s interval in 1.3); one F1 hub per subscription; F1 allows capacity 1 |
+| `event_hub_partition_count = 2` | | the built-in Event Hubs endpoint's parallel read "lanes"; F1 allows 2 |
+| `event_hub_retention_in_days = 1` | | how long unread messages are kept; F1 allows 1 day |
+
+Then: `terraform fmt` → `export ARM_SUBSCRIPTION_ID=...` → **read** `terraform plan` → `terraform apply` (an IoT Hub takes a few minutes) → `terraform state list`.
+
+
+### Step E done: the IoT Hub exists (06.11.2026)
+`infra/main.tf` now also has (typed by me):
+```hcl
+resource "azurerm_iothub" "main" {
+  name                = "iot-telemetry-bantos"                 # globally unique → iot-telemetry-bantos.azure-devices.net
+  resource_group_name = azurerm_resource_group.main.name       # reference, no quotes
+  location            = azurerm_resource_group.main.location   # reference
+
+  sku {                                                        # nested block: the product variant
+    name     = "F1"                                            # free tier, 8,000 msgs/day, one per subscription
+    capacity = 1                                               # units; F1 allows only 1
+  }
+
+  event_hub_partition_count   = 2                              # F1 maximum
+  event_hub_retention_in_days = 1                              # F1 maximum
+
+  tags = {
+    project    = "iot-telemetry"
+    managed_by = "terraform"
+  }
+}
+```
+New command: **`terraform validate`** checks the files for mistakes (wrong argument names, missing `}`) **without contacting Azure**. Like `bash -n`, but it knows which arguments exist.
+
+Ran: `fmt` → `validate` → `export ARM_SUBSCRIPTION_ID=...` → `plan` → `apply` (a few minutes, "Still creating...") → `state list`.
+
+Checked (read-only):
+```
+terraform state list
+az iot hub show --name iot-telemetry-bantos --query "{name:name, sku:sku.name, units:sku.capacity, partitions:properties.eventHubEndpoints.events.partitionCount, retentionDays:properties.eventHubEndpoints.events.retentionTimeInDays, state:properties.state, host:properties.hostName}" --output table
+```
+→ `azurerm_iothub.main` + `azurerm_resource_group.main`; the hub is `F1 | 1 unit | 2 partitions | 1 day | Active | iot-telemetry-bantos.azure-devices.net` ✅
+
+### Where do resource names, arguments and attributes come from? (06.11.2026)
+**The Terraform Registry**, the main source; everyone uses it. One page per resource type:
+https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/iothub
+(pattern: `.../docs/resources/` + type without `azurerm_`)
+
+| Section | Tells you |
+|---|---|
+| Example Usage | a working block: the usual starting point |
+| Argument Reference | everything you can **set**: Required/Optional, allowed values, defaults |
+| Attributes Reference | everything you can **read back** after creation (`id`, `hostname`, `shared_access_policy`), i.e. what other blocks can reference |
+| Timeouts | how long Terraform waits for create/update/delete |
+| Import | bringing an existing Azure resource under Terraform |
+
+Use the docs for **my provider version** (4.x, from the lock file); version picker at the top.
+
+**Azure's docs (Microsoft Learn)** for what the service *can do*: tiers, limits, prices ("IoT Hub pricing tiers", "IoT Hub quotas and throttling"). Terraform's docs say an argument *exists*; Azure's docs say F1 *only allows 2*.
+
+**Typical workflow for a new resource:**
+1. Azure docs: which tier, limits, price?
+2. Registry page: start from Example Usage, check every **Required** argument, add the optional ones needed.
+3. `terraform validate`.
+4. `terraform plan` → read → `apply`. Rejected values show up in the error message.
+
+Tools: VS Code extension **"HashiCorp Terraform"** (autocomplete, hover docs, error underlines); `az iot hub create --help`. Claude can be wrong or out of date (e.g. tier limits), so verify in the docs.
+
+### What is a SKU?
+**SKU = Stock Keeping Unit**, from retail: every product *variant* has its own SKU ("T-shirt, blue, M"). In Azure: **the product variant you buy** (tier + size + features = price).
+| Resource | SKU | Means |
+|---|---|---|
+| Storage account | `Standard_LRS` | standard disks + 3 local copies |
+| IoT Hub | `F1` | free: 8,000 msgs/day, 1 unit (paid: `B1–B3` basic, `S1–S3` standard) |
+| PostgreSQL (2.3) | `B_Standard_B1ms` | burstable, smallest |
+
+**Capacity** = how many **units** of the SKU (S1 × 3 = 3× messages, 3× price; F1 = 1 only). The SKU decides the **cost**: the wrong one is the classic surprise bill, which is why it's in reviewed code (and can be enforced with Azure Policy).
+
+### IoT Hub partitions and retention
+When a device sends a message, IoT Hub stores it in a **built-in, Event Hubs-compatible endpoint** (≈ AWS Kinesis) that other services read from: my Function (2.4) will read from it and write to PostgreSQL.
+**Key idea: it's a log (like a diary), not an inbox.** Reading doesn't remove messages. New ones are added at the end; each reader keeps a **bookmark** (checkpoint/offset) of how far it got.
+
+**Partitions = parallel lanes**
+```
+                      partition 0:  [msg][msg][msg][msg] →   reader A
+devices ──► IoT Hub ─┤
+                      partition 1:  [msg][msg][msg] →        reader B
+```
+- Each message goes into one lane; messages from the **same device** always go to the **same lane**, so they stay **in order**.
+- Lanes exist so several readers can work **in parallel** (one per lane).
+- Trade-off: more lanes = more parallelism but more overhead; **fixed when the hub is created**.
+- Analogy: supermarket checkout lanes. One customer every 30 s, so 2 lanes are plenty (and F1's max).
+
+**Retention = how long messages stay in the log**
+- Every message stays for the retention period, **read or not**, then it's deleted.
+- A reader that stops continues from its bookmark when it comes back.
+- **The safety net:** if the Function or database is down for 6 hours (README 2.4 question), messages wait, and the Function catches up. **Nothing is lost if the outage is shorter than the retention.**
+- **Mine: 1 day** (F1 max; paid tiers up to 7). An outage of **more than a day** loses the oldest readings: remember this for the incident drill (4.3).
+
+**In one sentence:** partitions = how many readers can work at once; retention = how long the hub waits for a reader that's behind.
+
+
+### Where do I find a resource's arguments and attributes? *(06.11.2026)*
+The **Terraform Registry** page for the resource type, e.g. https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/iothub: *Example Usage* (start here), *Argument Reference* (what you set: Required/Optional), *Attributes Reference* (what you can read back/reference). **Azure's docs (Microsoft Learn)** for tiers, limits and prices. Then `terraform validate` → `plan`. VS Code extension "HashiCorp Terraform" gives autocomplete and hover docs. → [11-terraform.md](11-terraform.md)
+
+### What is a SKU? *(06.11.2026)*
+**Stock Keeping Unit**: the product variant you buy (tier + size + features = price). `Standard_LRS` (storage), `F1` (free IoT Hub), `B_Standard_B1ms` (PostgreSQL). **Capacity** = how many units of it. The wrong SKU is the classic surprise bill. → [11-terraform.md](11-terraform.md)
+
+### What are IoT Hub partitions and retention? *(06.11.2026)*
+The hub's built-in endpoint is a **log** (not an inbox): readers keep a bookmark and reading removes nothing. **Partitions** = parallel lanes, so several readers can work at once; same device → same lane → in order; fixed at creation (F1: 2). **Retention** = how long messages stay, read or not (F1: 1 day). If the reader (my Function) is down for less than the retention, it catches up; longer, and the oldest readings are lost. → [11-terraform.md](11-terraform.md)
+
+
+### What is the lock file (`.terraform.lock.hcl`)? *(06.11.2026)*
+It records the **exact provider version** used, plus **fingerprints** of its files:
+```hcl
+provider "registry.terraform.io/hashicorp/azurerm" {
+  version     = "4.81.0"      # exact version installed
+  constraints = "~> 4.0"      # my rule from versions.tf
+  hashes = [ "h1:XhToZua4gti...", "zh:0732e7b742...", ... ]   # checksums
+}
+```
+- `~> 4.0` *allows* any 4.x; the lock file **pins 4.81.0** for everyone (me, CI, colleagues), so no "works on my laptop, breaks in CI".
+- **Hashes** = fingerprints checked on every download; a tampered or corrupted plugin is refused (supply-chain safety).
+- Upgrade **deliberately**: `terraform init -upgrade`, then review and commit the changed lock file.
+- **Commit it, never edit it by hand.** Same idea as `package-lock.json`, `poetry.lock`, and my pinned `requirements.txt`.
+
+### What are Azure Policy and policy as code? *(06.11.2026)*
+**Azure Policy** = rules Azure enforces on a subscription, e.g. only SKUs `F1`/`B1ms`, only EU regions, every resource must have a `project` tag, no public blob access. Effects: **deny** (block the request) or **audit** (allow but flag as non-compliant). **Prevention beats limits**: a budget warns after money is spent; a policy stops the expensive thing being created.
+**Policy as code** = those rules in version-controlled files (JSON definitions, or Terraform: `azurerm_policy_definition`, `azurerm_subscription_policy_assignment`), reviewed like infrastructure. AWS: Service Control Policies, AWS Config rules; general tool: Open Policy Agent.
+→ **Parked for later** (see "Topics for later").
+
+### What even is IoT Hub? *(06.11.2026)*
+More than an endpoint: `iot-telemetry-bantos.azure-devices.net` is only its front door.
+| Job | What it means | vs my Mosquitto |
+|---|---|---|
+| 1. Device registry + identity | each device has **its own credentials**, can be disabled individually | anonymous; anyone can claim any `device_id` (spoofing) |
+| 2. Secure connections | only registered devices, always TLS, over MQTT/AMQP/HTTPS | plain, unauthenticated |
+| 3. Receiving telemetry | device-to-cloud messages go into the built-in **log** (partitions + retention) | passes messages on, keeps nothing |
+| 4. Talking back | cloud-to-device messages, **direct methods** ("restart now"), **device twins** (stored copy of each device's settings/state) | — |
+| 5. Routing + monitoring | route messages by rules; metrics; quotas | — |
+= an **MQTT-style broker + device identity system + short-term message log**, run by Azure. AWS: **IoT Core**.
+
+### "Why two lanes if F1 allows 1?" Capacity vs partitions *(06.11.2026)*
+Two different numbers:
+- **`capacity = 1`** = **units** = how much **traffic you buy** (1 F1 unit = 8,000 msgs/day; F1 allows 1 unit).
+- **`event_hub_partition_count = 2`** = how the **log is split into lanes** for reading (F1 allows 2).
+Supermarket: capacity = customers per day the shop is licensed for; partitions = number of checkout lanes. Independent.
+
+### Can many devices send to one hub? *(06.11.2026)*
+Yes: thousands to millions, each with its own identity. F1 limits are **per hub**: 8,000 msgs/day **in total**, shared by all devices (plus a cap on registered devices, in the hundreds; check "IoT Hub quotas" on Microsoft Learn). Devices are spread over the 2 lanes, so lanes don't limit devices.
+**In this project: one device, the bridge.** Sensors talk to Mosquitto at home; the bridge forwards under *its own* identity (README 2.2: "why is the bridge one device?").
+
+## Topics for later
+- **Azure Policy / policy as code**: e.g. a policy allowing only the free tiers (`F1`, `B1ms`) and EU regions, written in Terraform. Fits at the end of week 3 or after v1. *(added 06.11.2026)*
+- **Terraform dependency graph as a picture** (`terraform graph | dot -Tpng`, needs Graphviz). *(added 06.11.2026)*
+
+### Gate result: step 2.1 README questions (Claude, 11.11.2026)
+**Passed ✅** after a few rounds. Final check:
+- **1** ✅ mandatory container, exactly one per resource, deleting it deletes everything inside.
+- **2** ✅ idempotent.
+- **3** ✅ both methods: a readable naming convention (`st` + purpose + initials) and a Terraform-generated random suffix; readable for resources people work with directly, random for supporting resources created in bulk.
+- **4** ✅ what (record of what Terraform created), why remote (**shared** / **locked** by the state lock / **durable**), why sensitive (every setting in plain text, incl. keys; protected by the private, TLS-only state container).
+- Build questions: 9–11 nearly there (see review: the group isn't an *action* in the plan; the mechanism is an **implicit dependency**, with destroy in reverse), 12 ✅, 13 good start (to finish in 2.2).
+
+**Lesson from the rounds:** keep the **state lock** (a lease that blocks a second run) and the **lock file** (`.terraform.lock.hcl`, pins provider versions) apart. Same word, different jobs.
+
+
+### Step 2.1, part F: the budget in Terraform (explained by Claude, 11.11.2026)
+The README asks to rewrite the 1.8 budget as code, so the safety net is recreated automatically too. Three new concepts:
+
+**1. Data source (`data`): read something that already exists**, without managing it.
+```hcl
+data "azurerm_subscription" "current" {}
+```
+"Look up the subscription I'm logged into." Referenced as `data.azurerm_subscription.current.id` (note the `data.` prefix). Keeps the subscription ID out of the public files.
+| | `resource` | `data` |
+|---|---|---|
+| Terraform | **creates and owns** it | only **reads** it |
+| In plan | `+` / `~` / `-` | read, no action |
+| On destroy | deleted | untouched |
+
+**2. Variable: a value kept out of the code.** The alert email shouldn't be in a public repo (spam bots).
+```hcl
+# infra/variables.tf: declares that the value is needed
+variable "alert_email" {
+  description = "Where budget alerts are sent"
+  type        = string
+}
+```
+```hcl
+# infra/terraform.tfvars: the actual value, gitignored (*.tfvars)
+alert_email = "you@example.com"
+```
+Terraform reads `terraform.tfvars` automatically; in code: `var.alert_email`.
+
+**3. Subscription-level resource**: a budget watches the **whole subscription**, so it isn't inside a resource group. Type: `azurerm_consumption_budget_subscription`.
+
+**Piece 1 (my task):** `infra/variables.tf` + `infra/terraform.tfvars` + `*.tfvars` in `.gitignore` (check `git status`) + the `data` block at the top of `main.tf` → `fmt` → `validate` → `plan`.
+**Piece 2 (next):** the budget block with 50% *Actual* and 100% *Forecasted* alerts.
+
+**Decision for piece 2: the existing portal budget from 1.8.**
+- Create a new one with Terraform, then delete the portal one by hand. Simple *(Claude's recommendation)*.
+- Or **import** it (`terraform import`): take over an existing resource without recreating it; useful but fiddlier.
+
+**More build questions (part F, budget):**
+
+14. Before running `terraform plan` with the new `data` block: what did I predict it would say about the data source, and what did it actually say? How is a `data` block different from a `resource` block?
+    It does not mention the Data source. Data Source is not something that has to be created like a resource.
+
+15. Two budgets would mean every alert twice. Which option do I choose for the portal budget (new + delete by hand, or import), and why?
+    I want to make new and delete the old one later, just to see how to do it. I am however also curious about how to copy it
+### Part F, piece 2: the budget block (explained by Claude, 11.11.2026)
+At the end of `infra/main.tf`:
+```hcl
+resource "azurerm_consumption_budget_subscription" "monthly" {
+  name            = "budget-iot-monthly"                    # Azure name, different from the portal budget
+  subscription_id = data.azurerm_subscription.current.id    # ← the data source, used here
+  amount          = 75                                      # in the billing currency (DKK); same as the portal budget
+  time_grain      = "Monthly"                               # resets every month
+
+  time_period {
+    start_date = "2026-11-01T00:00:00Z"                     # must be the 1st of a month; ISO 8601 with time zone
+  }
+
+  notification {                                            # alert 1: 50% actual
+    enabled        = true
+    threshold      = 50
+    operator       = "GreaterThanOrEqualTo"
+    threshold_type = "Actual"
+    contact_emails = [var.alert_email]                      # ← the variable; [ ] = a list
+  }
+
+  notification {                                            # alert 2: 100% forecasted (nested blocks can repeat)
+    enabled        = true
+    threshold      = 100
+    operator       = "GreaterThanOrEqualTo"
+    threshold_type = "Forecasted"
+    contact_emails = [var.alert_email]
+  }
+}
+```
+- **`data.` prefix** for data sources; **`var.` prefix** for variables.
+- `[ ... ]` = a **list** (a budget can email several people).
+- A **nested block can repeat**: two `notification` blocks = two alert rules.
+- Decision (question 15): **new budget via Terraform, then delete the portal one by hand** (Claude's recommendation, unless I choose import).
+
+Then: `fmt` → `validate` → `plan` (read it; look for my email) → `apply` → portal: Cost Management → Budgets → check the new one → **delete the old portal budget**.
+Possible error: subscription not registered for `Microsoft.Consumption`, the resource-provider issue again.
+
+16. In the `terraform plan` output for the budget: is my email address printed? Why would that be a problem once `terraform plan` runs in GitHub Actions (step 3.2), where logs of a public repo are public?
+
+17. After `apply`: does the new budget in the portal show the same amount and both alerts as the portal one from 1.8? Did I delete the old one, and why is that necessary?
+
+### Why is the subscription a `data` source and not a variable? *(11.11.2026)*
+| | **Variable** (`var.`) | **Data source** (`data.`) |
+|---|---|---|
+| Value comes from | **me**, from outside (`terraform.tfvars`, CLI flag, env var) | **Terraform looks it up** in Azure during `plan` |
+| Kind of value | a **choice** | a **fact** that already exists |
+| Example | `alert_email` (I decide) | `azurerm_subscription.current` (Azure knows which subscription I'm logged into) |
+- The subscription ID *could* be a variable, but then I'd copy it into a file by hand and it could go **out of date** (e.g. after switching subscription). The data source reads the current value on every `plan`, so it's always correct.
+- **Rule of thumb:** something **I decide** → variable; something that **already exists** and I only need to know about → data source; something Terraform should **create and own** → resource.
+- **File placement is only convention** (Terraform reads all `.tf` files as one): variables in `variables.tf` (the configuration's "inputs", in one place), data sources near the resources using them in `main.tf`, or in their own `data.tf` in bigger projects.
+
+### Why declare a data source, and how do I use it? *(11.11.2026)*
+**Terraform only looks up what I ask for.** A `data` block is a **question** for Terraform to ask Azure:
+```hcl
+data "azurerm_subscription" "current" {}
+```
+- `data` = a lookup, not something to create;
+- `"azurerm_subscription"` = **what kind of thing** to look up (there are data sources for resource groups, storage accounts, my login identity...);
+- `"current"` = **my nickname** for the answer (like `main` for resources);
+- `{}` = **search criteria**, empty = "the subscription I'm logged into". Others need some, e.g. `data "azurerm_resource_group" "state" { name = "rg-tfstate" }`.
+- Without the block there's no lookup, so `data.azurerm_subscription.current.id` → error "reference to undeclared resource".
+- In `main.tf` by convention only (next to the budget that uses it).
+
+**Using it:**
+1. Reference: `data.TYPE.NAME.ATTRIBUTE`, e.g. `subscription_id = data.azurerm_subscription.current.id`.
+2. Which attributes exist: the **data source's** Registry page (separate from resource pages): https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/data-sources/subscription → *Attributes Reference* (`id`, `subscription_id`, `display_name`, `tenant_id`, `state`...).
+3. **`terraform console`**: an interactive prompt that evaluates expressions (like the Python REPL); changes nothing. Inside `infra/`, after `export ARM_SUBSCRIPTION_ID=...`:
+```
+terraform console
+> data.azurerm_subscription.current.display_name
+> data.azurerm_subscription.current.id
+> data.azurerm_subscription.current.subscription_id
+> data.azurerm_subscription.current.state
+> var.alert_email
+> azurerm_iothub.main.hostname
+> exit
+```
+Works for data sources, variables **and** resources: anything I can reference.
+
+18. In `terraform console`: what did I predict, and what did each expression show? What's the difference between `id` and `subscription_id`, and which one does the budget's `subscription_id` argument need (check its Registry page)?
+
+### Why does the console say `(known after apply)` for the data source? *(11.11.2026)*
+Reproduced by Claude:
+| Expression | Console shows |
+|---|---|
+| `data.azurerm_subscription.current.display_name` | `(known after apply)` |
+| `azurerm_iothub.main.hostname` | `"iot-telemetry-bantos.azure-devices.net"` |
+| `var.alert_email` | my email |
+
+**`terraform console` answers from the state file, not from Azure.**
+- The IoT Hub was created by an `apply`, so its details are **in the state**.
+- The variable comes from `terraform.tfvars`, so it's always known.
+- The data source was added **after** the last `apply`. `plan` *did* read it (`Read complete`), but **`plan` never writes to the state**. So `terraform state list` showed no `data.azurerm_subscription.current`.
+- `(known after apply)` always means: **this value isn't in the state yet** (same as for the IoT Hub's `id` in its first plan).
+
+**Fix: `terraform apply -refresh-only`**: changes **nothing in Azure**; only updates the state to match reality, including data source results. Shows what it would update, asks for `yes`. Afterwards `state list` includes the data source.
+Second use: finds **drift**, i.e. differences between the state and resources someone changed **by hand** in the portal (useful for the week 4 incident drill).
+
+19. Before running `terraform apply -refresh-only`: did I predict any `+`, `~` or `-` changes to resources? What did it actually show, and what did `terraform state list` and the console show afterwards?
+
+### Error: "parsing the Subscription ID: the number of segments didn't match" (11.11.2026)
+I wrote the whole budget block myself; `terraform apply` failed with:
+```
+Error: parsing "Azure subscription 1": parsing the Subscription ID: the number of segments didn't match
+```
+**Cause (line 30):** `subscription_id = data.azurerm_subscription.current.display_name`. `display_name` is the human-readable label ("Azure subscription 1"), but the argument needs the subscription's **ID**.
+
+**How to read the error**, left to right: **the value it got** ("Azure subscription 1") → **what it expected** (a Subscription ID) → **why they don't fit** (segments). Azure IDs are paths of `/`-separated **segments**:
+```
+/subscriptions/b9efd0b9-39ba-41f2-aab3-14a4df1e4f2c
+ └─segment 1─┘ └──────────segment 2───────────────┘
+```
+A name without `/` can't match. Most Terraform errors follow this got / expected / why pattern.
+
+**Nothing was created**: the error happens while working out the plan, before any change (`terraform state list` still showed only the resource group and the hub).
+
+**Fix:** pick the right attribute (`id` or `subscription_id`) using the budget's and the data source's Registry pages. Then `validate` → `plan` (expect `1 to add`) → normal `apply`, which also saves the data source into the state and fixes the console's `(known after apply)`.
+(`-refresh-only` couldn't run while the configuration had this error: Terraform evaluates the whole configuration first.)
+
+20. Which attribute did I choose for `subscription_id`, `id` or `subscription_id`? What does each one contain, and where in the docs did I find out?
+
+### Budget created by Terraform (12.11.2026)
+Fixed line 30 to `subscription_id = data.azurerm_subscription.current.id` (the full path `/subscriptions/<guid>`; `subscription_id` would be the bare GUID). Then `apply` worked.
+
+`terraform state list` now has **4 entries**:
+```
+data.azurerm_subscription.current                 ← the data source, saved this time
+azurerm_consumption_budget_subscription.monthly   ← the new budget
+azurerm_iothub.main
+azurerm_resource_group.main
+```
+`terraform state show azurerm_consumption_budget_subscription.monthly` → amount 75, Monthly, from 2026-11-01, 50% Actual + 100% Forecasted, both `GreaterThanOrEqualTo`. The data source is in the state now, so the console shows real values.
+
+Budgets in Azure (read-only check by Claude):
+```
+az consumption budget list --query "[].{name:name, amount:amount, timeGrain:timeGrain}" --output table
+```
+| Budget | Amount (DKK) | Created by |
+|---|---|---|
+| `budget-danskhjaelp` | 30 | me, in the portal (1.8) |
+| `budget_iot_monthly` | 75 | Terraform |
+→ The amounts differ (75 was Claude's example). Next: set the Terraform amount to match my intent, and **delete the portal budget** (Cost Management → Budgets → Delete) to avoid double alerts.
+
+21. Changing `amount` from 75 to 30: which symbol did I predict in the plan (`+`, `~` or `-/+`), and what did it show? How many "to change"?
+
+### Can I make budgets for specific resource groups? *(12.11.2026)*
+Yes. Every budget has a **scope** (what it watches):
+| Scope | Terraform resource | Watches |
+|---|---|---|
+| Management group | `azurerm_consumption_budget_management_group` | several subscriptions |
+| **Subscription** (mine) | `azurerm_consumption_budget_subscription` | everything in the subscription |
+| **Resource group** | `azurerm_consumption_budget_resource_group` | only resources inside one group; takes `resource_group_id` (e.g. `azurerm_resource_group.main.id`) instead of `subscription_id` |
+- A subscription budget can also be narrowed with a **`filter`** block: only certain resource groups, or only resources with a certain **tag** (e.g. `project = "iot-telemetry"`).
+- **For this project, keep the subscription budget as the safety net:** it catches *everything* (incl. `rg-tfstate` or accidental resources elsewhere), and it **survives teardown**. A resource-group budget is attached to the group, so **deleting the group deletes its budget too**, which would be exactly during the step 3.3 rebuild.
+- RG budgets are useful when one subscription is **shared** by several projects or teams: one budget each, plus a subscription budget on top.
+- Optional exercise: add a small RG budget for `rg-iot-telemetry` next to the subscription one, and watch what happens to it during `destroy`.
+
+### Resource-group budget added (12.11.2026)
+I added `azurerm_consumption_budget_resource_group.resource_group` myself: `resource_group_id = azurerm_resource_group.main.id`, amount 50. Azure shows `budget_iot_resource` (50 DKK) on `rg-iot-telemetry` ✅.
+Budgets now: `budget-danskhjaelp` (30, portal: **to delete**), `budget_iot_monthly` (75, Terraform, subscription), `budget_iot_resource` (50, Terraform, resource group).
+
+### Last part of 2.1: the "done when" test (explained by Claude, 12.11.2026)
+**`destroy` everything → `apply` again → `plan` says "No changes"**: proves the code describes the infrastructure **completely** (nothing depends on manual clicks). Rehearsal for step 3.3.
+- **Before:** delete the portal budget; **commit and push** (code safe in git before destroying).
+- **Destroyed:** everything **in the state** (resource group, IoT Hub, both Terraform budgets). **Not** `rg-tfstate` / storage account (not in the state) and not the data source (only read, not owned).
+- Steps: `terraform destroy` (read the plan: red `-`; type `yes`; the hub takes minutes) → `terraform state list` + portal → `terraform apply` → `terraform plan` → ✅ "No changes".
+- Possible rebuild error: a deleted resource's name may not be reusable immediately.
+
+22. Before typing `yes` on `terraform destroy`: how many "to destroy" did I predict, and how many did it show? What was left in `terraform state list` afterwards, and why?
+
+23. In which order did Terraform delete the resources, and why that order? (Think: implicit dependencies, what refers to what.)
+
+24. After the rebuild: how many "to add" did I predict and get, and what did the final `terraform plan` say? What does that prove?
