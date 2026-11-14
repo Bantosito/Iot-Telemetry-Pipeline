@@ -2529,8 +2529,11 @@ Then: `fmt` → `validate` → `plan` (read it; look for my email) → `apply` �
 Possible error: subscription not registered for `Microsoft.Consumption`, the resource-provider issue again.
 
 16. In the `terraform plan` output for the budget: is my email address printed? Why would that be a problem once `terraform plan` runs in GitHub Actions (step 3.2), where logs of a public repo are public?
+It does print the email, I don't know if its good, it would lead to a potential sensitive data being released publically 
 
 17. After `apply`: does the new budget in the portal show the same amount and both alerts as the portal one from 1.8? Did I delete the old one, and why is that necessary?
+
+Yes it does, I will delete the old budget as it will send confusing "double" reminders that i don't control through terraform.
 
 ### Why is the subscription a `data` source and not a variable? *(11.11.2026)*
 | | **Variable** (`var.`) | **Data source** (`data.`) |
@@ -2572,6 +2575,8 @@ Works for data sources, variables **and** resources: anything I can reference.
 
 18. In `terraform console`: what did I predict, and what did each expression show? What's the difference between `id` and `subscription_id`, and which one does the budget's `subscription_id` argument need (check its Registry page)?
 
+Each expression shows a different data about subscritpion. Id shows the a read only attribute pointing to the read only subscription resource. Subscription id the exact subscription guid identifier. According to registry budget resource requires only .id 
+
 ### Why does the console say `(known after apply)` for the data source? *(11.11.2026)*
 Reproduced by Claude:
 | Expression | Console shows |
@@ -2590,6 +2595,7 @@ Reproduced by Claude:
 Second use: finds **drift**, i.e. differences between the state and resources someone changed **by hand** in the portal (useful for the week 4 incident drill).
 
 19. Before running `terraform apply -refresh-only`: did I predict any `+`, `~` or `-` changes to resources? What did it actually show, and what did `terraform state list` and the console show afterwards?
+DOn't remember this one
 
 ### Error: "parsing the Subscription ID: the number of segments didn't match" (11.11.2026)
 I wrote the whole budget block myself; `terraform apply` failed with:
@@ -2611,6 +2617,8 @@ A name without `/` can't match. Most Terraform errors follow this got / expected
 (`-refresh-only` couldn't run while the configuration had this error: Terraform evaluates the whole configuration first.)
 
 20. Which attribute did I choose for `subscription_id`, `id` or `subscription_id`? What does each one contain, and where in the docs did I find out?
+
+Answered in 18. Not sure where i can be found 
 
 ### Budget created by Terraform (12.11.2026)
 Fixed line 30 to `subscription_id = data.azurerm_subscription.current.id` (the full path `/subscriptions/<guid>`; `subscription_id` would be the bare GUID). Then `apply` worked.
@@ -2636,6 +2644,8 @@ az consumption budget list --query "[].{name:name, amount:amount, timeGrain:time
 
 21. Changing `amount` from 75 to 30: which symbol did I predict in the plan (`+`, `~` or `-/+`), and what did it show? How many "to change"?
 
+When value is changed terraform apply shows ~ where value is changed. One to change but points to the whole source and amount argument.
+
 ### Can I make budgets for specific resource groups? *(12.11.2026)*
 Yes. Every budget has a **scope** (what it watches):
 | Scope | Terraform resource | Watches |
@@ -2660,7 +2670,242 @@ Budgets now: `budget-danskhjaelp` (30, portal: **to delete**), `budget_iot_month
 - Possible rebuild error: a deleted resource's name may not be reusable immediately.
 
 22. Before typing `yes` on `terraform destroy`: how many "to destroy" did I predict, and how many did it show? What was left in `terraform state list` afterwards, and why?
-
+4 resources were destroyed. State list shows nothing. Tfstate is still present
 23. In which order did Terraform delete the resources, and why that order? (Think: implicit dependencies, what refers to what.)
-
+It deleted resource goup first, then iot hub and then budgets.
+Second try: Yes I see it now, i now red destruction complete messages and the order os right resource group came last
 24. After the rebuild: how many "to add" did I predict and get, and what did the final `terraform plan` say? What does that prove?
+TThere were 4 resources to add. And after creating them infrastructure amtched the config which proves that the infrastructure was rebuilt and matches the state before destroying 
+
+### "Done when" for 2.1: met ✅ (checked by Claude, 12.11.2026)
+- `terraform destroy` → 4 resources destroyed; `state list` empty; `rg-tfstate` + storage account untouched.
+- `terraform apply` → everything rebuilt; `state list` has all 5 entries again.
+- `terraform plan` → **"No changes. Your infrastructure matches the configuration."**
+- Commit `630e032` (both budgets) pushed.
+
+**Correction for question 23 (destroy order):** the IoT Hub and the RG budget **refer to** the resource group, so they **depend on** it. Create order: group → then hub and budget. **Destroy order is the reverse**: dependents first, **the group last** (you can't remove the shelf while things are still on it). The subscription budget depends only on the data source, so Terraform can delete it **in parallel**. Check the `Destruction complete` lines: `azurerm_resource_group.main` comes last.
+
+Still open: delete the portal budget `budget-danskhjaelp` (double alerts).
+
+### Exercises: step 2.1 (predict → run → record)
+
+**1. Drift: someone changes things by hand.** *(10 min)*
+In the portal, change the `project` tag on `rg-iot-telemetry` to something else. Then:
+```
+terraform plan
+```
+Predict: will Terraform notice? Which symbol? Then `terraform apply` and check the tag in the portal again. What did Terraform do, and why does this mean "don't click in the portal" for Terraform-managed resources?
+DOne nad answered in 21
+
+**2. Break a reference.** *(5 min)*
+In the IoT Hub block, change `azurerm_resource_group.main.name` to `azurerm_resource_group.mian.name` (typo). Run `terraform validate`. Read the error: what does it call the problem? Undo it.
+
+**3. See a replacement (`-/+`) without doing it.** *(5 min)*
+Change the IoT Hub's `name` to `"iot-telemetry-bantos2"` and run **only** `terraform plan`. **Don't apply.** Look for `-/+` and the words **"forces replacement"**. Why can't Azure rename a hub in place? What would happen to the hub's devices and keys if you applied? Undo the change, then run `plan` again ("No changes").
+
+**4. The state lock in action.** *(5 min)*
+Open two terminal tabs in `infra/` (both with the `export`). Start `terraform apply` in tab 1 and **leave it waiting** at the `yes` prompt. In tab 2, run `terraform plan`. What happens, and why? Then answer `no` in tab 1.
+
+**5. Where variables come from.** *(10 min)*
+- Run `terraform plan -var 'alert_email=test@example.com'`. Does the plan want to change the budgets? Why? (Don't apply.)
+- Rename `terraform.tfvars` to `terraform.tfvars.off` and run `terraform plan`. What does Terraform ask you? Press Ctrl+C, then rename it back.
+
+**6. Explore with the console.** *(5 min)*
+```
+terraform console
+> azurerm_iothub.main.hostname
+> azurerm_resource_group.main.id
+> data.azurerm_subscription.current.display_name
+> length(azurerm_iothub.main.shared_access_policy)
+> exit
+```
+What does `length(...)` count? Which of these values came from the state, which from Azure?
+
+**7. Draw the dependency graph (optional).** *(10 min)*
+```
+brew install graphviz
+terraform graph | dot -Tpng > graph.png
+open graph.png
+```
+Which arrows do you see? Does the picture match your answer to question 23? (Don't commit `graph.png`.)
+
+
+### Claude's review of answers 16–24 (13.11.2026)
+- **16** ✅ right worry. Fix: `sensitive = true` in the `alert_email` variable block, so plan shows `(sensitive value)`. Matters for step 3.2 (public GitHub logs).
+- **17, 18** ✅ (`id` = full path, `subscription_id` = bare GUID; the budget needs `id`).
+- **19** ⏭️ skipped (the normal `apply` saved the data source instead). Exercise 1 (drift) is a reason to try `-refresh-only`.
+- **20** ✅; found on the budget's Registry page (Argument Reference; Example Usage uses `.id`) + the data source's page.
+- **21** ✅ `~` = update in place, 1 to change.
+- **24** ✅; nuance: it proves the infrastructure matches the **code**, i.e. the code alone is a complete description.
+- Open: delete `budget-danskhjaelp`; commit `infra/main.tf` (subscription budget now 70, applied) + `NOTES.md`.
+
+### Exercise 7 in depth: the dependency graph (explained by Claude, 13.11.2026)
+`terraform graph` reads only the `.tf` files (contacts nothing) and prints the graph in **DOT** format. My real graph:
+```dot
+digraph G {
+  rankdir = "RL";
+  node [shape = rect, fontname = "sans-serif"];
+  "data.azurerm_subscription.current" [label="data.azurerm_subscription.current"];
+  "azurerm_consumption_budget_resource_group.resource_group" [label="..."];
+  "azurerm_consumption_budget_subscription.monthly" [label="..."];
+  "azurerm_iothub.main" [label="azurerm_iothub.main"];
+  "azurerm_resource_group.main" [label="azurerm_resource_group.main"];
+  "azurerm_consumption_budget_resource_group.resource_group" -> "azurerm_resource_group.main";
+  "azurerm_consumption_budget_subscription.monthly" -> "data.azurerm_subscription.current";
+  "azurerm_iothub.main" -> "azurerm_resource_group.main";
+}
+```
+- `digraph` = **directed graph** (arrows have a direction); `rankdir = "RL"` = lay out right-to-left; `node [shape = rect]` = boxes;
+- a name alone = a **node** (one per resource/data source); **`A -> B`** = an **edge**: **"A depends on B"**.
+
+| Arrow | Because of |
+|---|---|
+| RG budget → resource group | `resource_group_id = azurerm_resource_group.main.id` |
+| IoT Hub → resource group | `resource_group_name = azurerm_resource_group.main.name` |
+| subscription budget → data source | `subscription_id = data.azurerm_subscription.current.id` |
+```
+ azurerm_iothub.main  ─────────────────────┐
+                                            ├──►  azurerm_resource_group.main
+ ..._budget_resource_group.resource_group ─┘
+
+ ..._budget_subscription.monthly  ─────────────►  data.azurerm_subscription.current
+```
+- **Create:** start with boxes pointing at nothing (resource group, data source), then whatever points at them; unconnected boxes in **parallel**.
+- **Destroy:** reverse. Boxes nothing points at go first (hub, budgets), **the resource group last** (= question 23).
+- Two separate groups: the subscription budget has **no connection** to the resource group.
+
+**Drawing it:**
+```
+brew install graphviz                                  # the drawing tool (also add brew "graphviz" to the Brewfile)
+terraform graph | dot -Tpng > ~/Desktop/graph.png      # | = pipe the DOT text into dot; -Tpng = output type PNG; saved outside the project
+open ~/Desktop/graph.png                               # macOS: open with the default app (Preview)
+```
+Variations: `-Tsvg` (sharp, scalable); `terraform graph -type=plan-destroy` (the destroy graph); or paste the DOT text into an online Graphviz viewer (only addresses, no secrets).
+**Why useful:** with hundreds of resources: understand create/destroy order, find **cycles** (A refers to B and B to A → error "Cycle: ...", neither can be created first), explain an infrastructure to someone new.
+
+25. Exercise 7: before opening the picture, how many boxes and arrows did I predict, and which box has two arrows pointing at it? Did the picture match?
+
+### `zsh: command not found: dot` (13.11.2026)
+`dot` is the drawing program that comes **with Graphviz**, which wasn't installed. My Brewfile said `brew "graphwiz"`, but the package is **`graphviz`** (with a *v*, from "graph visualization"); `brew install graphwiz` fails with "No available formula".
+Fix: correct the Brewfile entry → `brew install graphviz` (or **`brew bundle`**, which installs everything missing from the Brewfile) → `which dot` should print `/opt/homebrew/bin/dot`.
+**"command not found" almost always means:** not installed, installed but not on PATH, or misspelled. First check: `which <name>`.
+
+### `brew install graphviz` fails: "Failed to download resource ... ftp.gnu.org ... SSL_ERROR_SYSCALL" (13.11.2026)
+Two problems stacked:
+1. **No ready-made package (bottle) for my system.** My Mac runs **macOS 14 (Sonoma)**; Homebrew builds bottles for the newest macOS versions. `brew info --json=v2 gettext` listed no bottle for my system, so Homebrew falls back to **compiling from source**.
+2. To compile, it downloads source code from **`ftp.gnu.org`**, which refused/dropped the connection (`SSL_ERROR_SYSCALL`, `Empty reply from server`). GNU's server is known to be overloaded at times.
+Checked with: `brew config` (Homebrew 7.0.13, macOS 14.8.5-arm64).
+
+**Options:** (1) skip it: `terraform graph`, paste the DOT text into an online "Graphviz online" viewer (addresses only, no secrets) *(chosen for now)*; (2) retry later (compiling graphviz + helpers can take 30+ min); (3) long term, a newer macOS brings bottles back.
+Brewfile: comment out the graphviz line for now, so `brew bundle` doesn't fail every time. **Bottle** = Homebrew's pre-built package; without one, Homebrew compiles from source.
+
+
+## Step 2.2 — IoT Hub: the bridge sends real readings to Azure
+Date: 13.11.2026
+
+**Goal:** `forward()` in the bridge currently only logs; now it also **sends readings to IoT Hub**. **Done when:** `az iot hub monitor-events` shows readings arriving in Azure.
+
+| # | Piece | Who | New concepts |
+|---|---|---|---|
+| A | Register the bridge as a device, get its connection string | me, with `az` | device identity, connection string, `azure-iot` extension |
+| B | Store the connection string only in `.env` | me | secrets in environment variables |
+| C | Add an IoT Hub destination to the bridge | me (Claude guides and reviews) | Azure IoT device SDK, swappable destinations |
+| D | Run it, watch readings arrive | me | end-to-end check |
+
+### Piece A: register the bridge as a device (explained by Claude)
+**Device identity** = an entry in the hub's **device registry**, with a **device ID** (`bridge-01`) and **its own secret keys**. IoT Hub only accepts messages from registered devices that prove who they are, which fixes the playground spoofing problem (on Mosquitto anyone could claim to be `sensor-01`).
+
+**Why not Terraform?** `azurerm` manages Azure *resources* (the hub). Devices are entries **inside** the hub, managed through the hub's **data plane** (Azure guide §7), which `azurerm` doesn't cover. So: `az`. **Manual step to remember:** after `destroy` → `apply` the hub is new and **empty**, so the device must be registered again (for step 3.3's list).
+
+```
+az extension add --name azure-iot          # add-on for the Azure CLI: device commands, monitor-events
+az extension list --output table           # check it's installed
+
+az iot hub device-identity create --hub-name iot-telemetry-bantos --device-id bridge-01
+# → JSON: "status": "enabled", an "authentication" section with keys (secrets)
+
+az iot hub device-identity connection-string show --hub-name iot-telemetry-bantos --device-id bridge-01
+# → HostName=iot-telemetry-bantos.azure-devices.net;DeviceId=bridge-01;SharedAccessKey=...
+```
+**Connection string** = everything needed to connect in one line: *where* (`HostName`), *who* (`DeviceId`), *proof* (`SharedAccessKey`).
+⚠️ **`SharedAccessKey` is a password**: anyone with it can send *as my bridge*. Never paste it in chat or anywhere public; it goes **only in `.env`** (gitignored).
+
+### Step 2.2: questions to answer (in my own words)
+
+**README questions (the gate before step 2.3):**
+
+1. Why is the bridge one "device", not each sensor?
+
+2. What are the free tier's limits?
+
+3. What happens when you exceed them?
+
+**Questions from the build:**
+
+26. Before running `az iot hub device-identity create` a second time with the same ID: did I predict it would be idempotent (like `az group create`)? What actually happened?
+
+### Can registering IoT Hub devices be done as code? Is that the practice? *(13.11.2026)*
+Yes, and automating it is the practice, just **not with `azurerm`**: every `azurerm` resource goes through **ARM** (`management.azure.com`). The hub is an ARM resource; a **device** isn't. It's created through the hub's own address (`<hub>.azure-devices.net`, the data plane). Not even `azapi` (which covers any ARM resource) can do it.
+
+| Option | How | Typical for |
+|---|---|---|
+| 1. Idempotent script | bash: `az ... device-identity show` → if missing, `create`; in `infra/`, run **after `terraform apply`** (by hand or as a CI step) | **small setups like mine** |
+| 2. SDK program | Python `azure-iot-hub` (`IoTHubRegistryManager`) | apps managing devices themselves |
+| 3. **Device Provisioning Service (DPS)** | devices **register themselves** on first boot (shared enrolment secret or certificate) | **the real-world standard for fleets** ("zero-touch provisioning"); Terraform creates the DPS (`azurerm_iothub_dps`) |
+| 4. Terraform running a script | `terraform_data` + `local-exec` | generally **avoided**: Terraform can't track or plan what the script created |
+
+**Plan for this project:** do piece A by hand first (learning), then turn it into **`infra/register-device.sh`** (idempotent: check, create only if missing), like `bootstrap.sh`. Removes a manual step from the 3.3 list; the 3.2 pipeline can run it after `apply`.
+
+**Topics for later (addition):**
+- **Device Provisioning Service (DPS)**: devices register themselves at first boot (zero-touch provisioning); the standard for real fleets. Relevant for the real-ESP32 phase after v1. *(added 13.11.2026)*
+- **`infra/register-device.sh`**: idempotent script (check device exists → create only if missing) to register `bridge-01` after `terraform apply`; removes a manual step from the 3.3 rebuild and can run in the 3.2 pipeline. Decided 13.11.2026: do piece A by hand first, automate later. *(added 13.11.2026)*
+
+
+### Piece A done (14.11.2026)
+Ran the three commands myself. Checked by Claude (read-only, no keys shown):
+```
+az iot hub device-identity show --hub-name iot-telemetry-bantos --device-id bridge-01 \
+  --query "{deviceId:deviceId, status:status, auth:authentication.type, connection:connectionState}" --output table
+```
+| DeviceId | Status | Auth | Connection |
+|---|---|---|---|
+| bridge-01 | enabled | sas | Disconnected |
+- **`sas`** = *Shared Access Signature*: the device proves its identity with the secret key in its connection string. Alternative: **X.509 certificates** (common for real hardware fleets, with DPS).
+- **`Disconnected`** is expected: nothing has connected as `bridge-01` yet. It changes to `Connected` once the bridge connects (piece D).
+
+### Piece B: the connection string into `.env` (explained by Claude)
+There was **no `.env`** yet (everything used defaults); `.gitignore` already covers it (line 9). The bridge reads settings from **environment variables**, and `.env` holds them locally; Compose (`env_file`) and `python-dotenv` (`load_dotenv()`) load it automatically. Secrets and machine-specific settings stay out of the code (same reason as in 1.3).
+```
+cp .env.example .env          # cp = copy the template to a new .env
+```
+In `.env` add (real value; no spaces around the first `=`, no quotes; the string's own `=` and `;` are fine, since everything after the first `=` is the value):
+```
+IOTHUB_DEVICE_CONNECTION_STRING=HostName=iot-telemetry-bantos.azure-devices.net;DeviceId=bridge-01;SharedAccessKey=...
+```
+In `.env.example` (committed) document the setting **without** the secret:
+```
+# Azure IoT Hub device connection string for the bridge (step 2.2).
+# Get it with: az iot hub device-identity connection-string show --hub-name <hub> --device-id bridge-01
+# NEVER put the real value here - only in .env.
+IOTHUB_DEVICE_CONNECTION_STRING=
+```
+Check: `git status` → `.env.example` modified, **`.env` must not appear**.
+
+27. If I ran `git add .` right now, would `.env` be added to the commit? Why or why not?
+
+### What are X.509 certificates? *(14.11.2026)*
+The international standard format for **digital certificates**: electronic ID cards for computers (the browser padlock on `https://` is one).
+- Built on **public-key cryptography**: a **private key** (secret, never leaves its owner) + a matching **public key** (shown to anyone). The owner **signs** with the private key; anyone can **verify** with the public key, without seeing the private key.
+- **The certificate** = "this public key belongs to *bridge-01*", **signed by a Certificate Authority (CA)** that vouches for it. Like a passport: trusted because a government (CA) issued it, not because you say so.
+
+| | **SAS (shared key)**: what I use | **X.509 certificate** |
+|---|---|---|
+| Secret | one key known to **both** device and hub | **private key only on the device**; the hub needs only the public part |
+| Hub side leaked | key exposed, device can be impersonated | nothing secret stored there |
+| Expiry | until rotated | **built-in expiry date**, forces renewal |
+| Setup | simple: one string in `.env` | more work: a CA, issuing, safe key storage, renewal |
+| Typical for | prototypes, small setups | **production fleets**, private key in a **secure chip** (TPM/secure element), with DPS |
+Key difference: SAS = a copy of the secret in **two** places; X.509 = the secret in **one** place, never travels.
+
+**Already in use, the other way round:** connecting to `iot-telemetry-bantos.azure-devices.net` uses **TLS**, and the **hub shows its X.509 certificate**, so the bridge knows it's the real hub (the SDK checks automatically). X.509 proves the *hub* to the bridge; SAS proves the *bridge* to the hub. Certificates both ways = **mutual TLS (mTLS)**.
+For this project SAS is right (one device, learning setup); X.509 + DPS belong with the real-ESP32 phase after v1.

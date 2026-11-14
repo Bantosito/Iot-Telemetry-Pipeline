@@ -28,7 +28,7 @@ resource "azurerm_iothub" "main" {
 resource "azurerm_consumption_budget_subscription" "monthly" {
   name            = "budget_iot_monthly"
   subscription_id = data.azurerm_subscription.current.id
-  amount          = 75
+  amount          = 70
   time_grain      = "Monthly"
   time_period {
     start_date = "2026-11-01T00:00:00Z" # First of the month, ISO 8601 with time zone

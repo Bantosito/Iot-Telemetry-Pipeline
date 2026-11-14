@@ -17,5 +17,8 @@ cask "azure-cli"
 # Docker Desktop: runs the containers (step 1.6).
 cask "docker-desktop"
 
+# Library used for creating terraform graphs 
+brew "graphviz"
+
 # Optional: GitHub CLI, e.g. `gh run watch` to follow CI from the terminal.
 # brew "gh"
