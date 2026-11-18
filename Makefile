@@ -16,6 +16,7 @@ help:
 	@echo "make down    - stop and remove the containers"
 	@echo "make logs    - follow the bridge's logs (Ctrl+C to stop)"
 	@echo "make watch   - start mosquitto watch subscried to everything (#)"
+	@echo "make fix"	- Apply fixes to resolve lint violation"
 
 venv: requirements-dev.txt
 	python -m venv .venv
@@ -44,5 +45,7 @@ logs:
 
 watch:
 	mosquitto_sub -t '#' -v
+fix:
+	ruff check --fix .
 
  

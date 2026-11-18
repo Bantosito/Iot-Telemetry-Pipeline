@@ -2909,3 +2909,356 @@ Key difference: SAS = a copy of the secret in **two** places; X.509 = the secret
 
 **Already in use, the other way round:** connecting to `iot-telemetry-bantos.azure-devices.net` uses **TLS**, and the **hub shows its X.509 certificate**, so the bridge knows it's the real hub (the SDK checks automatically). X.509 proves the *hub* to the bridge; SAS proves the *bridge* to the hub. Certificates both ways = **mutual TLS (mTLS)**.
 For this project SAS is right (one device, learning setup); X.509 + DPS belong with the real-ESP32 phase after v1.
+
+### Piece B check (by Claude, 14.11.2026)
+- `.env` created; ignored by git (`git check-ignore -q .env` → ignored).
+- **Hostname:** the connection string uses `iot-telemetry-bantos.device.azure-devices.net` (what `az` printed), not `iot-telemetry-bantos.azure-devices.net`. Checked with `dig +short <name>`: **both resolve to the same server** (`13.69.230.65`), so the `.device.` name is a valid **alias** (Azure's separate hostname for device connections). Claude first suspected a typo; that was wrong.
+- **Secret safety** across the whole history:
+```
+git log --all --format=%h -- .env                                          # → nothing: .env never committed
+git grep -n "SharedAccessKey=[A-Za-z0-9+/]\{20,\}" $(git rev-list --all)   # → nothing: no real key in any commit
+```
+- **Mistake in commit `af4100f`:** the new lines **replaced** `.env.example` instead of being added, losing the header comment and the 5 MQTT/sensor settings. `.env.example` is the template people copy, so they must be there. Fix: restore them from history:
+```
+git show 630e032:.env.example     # show the file as it was in commit 630e032 (read-only). Pattern: git show <commit>:<path>
+```
+Target layout: header comment → 5 MQTT/sensor settings → empty line → IoT Hub block.
+
+
+### Piece C: decision first, a dependency conflict (14.11.2026)
+Before designing, Claude dry-ran installing Microsoft's official library next to the bridge's requirements (installs nothing):
+```
+pip install --dry-run --quiet -r bridge/requirements.txt azure-iot-device
+```
+```
+ERROR: Cannot install azure-iot-device==2.0.0 ... 2.14.0 and paho-mqtt==2.1.0
+because these package versions have conflicting dependencies.
+```
+**Dependency conflict:** `azure-iot-device` uses paho-mqtt **< 2.0** internally; the bridge uses **2.1.0**. One environment can have only **one** version of a package. (The `invalid Requires-Python` warnings hint that its packaging lags newer Pythons.)
+
+| Option | + | − |
+|---|---|---|
+| **1. MQTT directly to IoT Hub with my paho** (2nd connection, TLS, SAS token) | no new dependency; reuses 1.3/1.4; what the official library does internally; what a real ESP32 does | I write the SAS-token step myself |
+| 2. HTTPS per reading (REST API + SAS token) | simplest, stdlib only | not how IoT devices normally talk |
+| 3. Downgrade paho to 1.x | official library handles reconnects/tokens | rewrite callbacks for the old, deprecated API |
+**Decision: option 1.**
+
+### The big picture of piece C
+```
+sensor ──MQTT──► Mosquitto (home, 1883, no login) ──► bridge ── validate
+                                                         forward() ──► log destination (as now)
+                                                                   └─► IoT Hub destination ──MQTT over TLS──► iot-telemetry-bantos
+                                                                        (port 8883, login with a SAS token)
+```
+Needed: **where** (hostname) + **who** (device ID), both in the connection string, + **proof**: a **SAS token**, a time-limited permission slip *calculated from* the secret key. New file **`bridge/iothub.py`** keeps Azure code apart from `main.py`'s MQTT plumbing (like `validator.py`).
+| Piece | What |
+|---|---|
+| C1 | read the connection string into its parts |
+| C2 | generate a SAS token from the key |
+| C3 | IoT Hub destination: connect over TLS, publish readings |
+| C4 | plug into `forward()` next to the log; tests |
+
+### Piece C1: split the connection string (explained by Claude)
+`HostName=...;DeviceId=bridge-01;SharedAccessKey=AbC123xyz==` = key=value pairs separated by `;` → a dict. Function: `parse_connection_string(connection_string: str) -> dict`.
+- `.split(";")` → list of pieces; then each piece is cut at `=`.
+- ⚠️ **Trap:** Base64 keys often **end in `=`**, so cutting at *every* `=` breaks the key. **`maxsplit`**: `"a=b=c".split("=", 1)` → `["a", "b=c"]` (cut only at the first `=`).
+- Test in the REPL with a **fake** string (never the real one in terminal history):
+```python
+import sys; sys.path.insert(0, "bridge")    # also look for modules in bridge/ (like pythonpath in pyproject.toml)
+from iothub import parse_connection_string
+parse_connection_string("HostName=example.azure-devices.net;DeviceId=bridge-01;SharedAccessKey=AbC123xyz==")
+```
+
+28. What goes wrong in `parse_connection_string` *without* `maxsplit`, and why do Base64-encoded keys often end in `=`?
+
+### C1 help: `sys.path`, one dictionary, unpacking (16.11.2026)
+**`sys.path` = Python's version of `PATH`.** On `import iothub`, Python searches the folders in the list `sys.path`, in order, for `iothub.py`.
+| | Terminal | Python |
+|---|---|---|
+| You type | `az` | `import iothub` |
+| Searches | folders in `PATH` | folders in `sys.path` |
+| Not found | `command not found` | `ModuleNotFoundError` |
+- `sys.path.insert(0, "bridge")` = put `bridge/` **first** in the search list (index 0).
+- `python bridge/main.py` adds the script's own folder automatically, so `main.py` can `from validator import validate`. pytest gets it from `pythonpath = ["bridge"]` in `pyproject.toml`.
+- **Those lines are for the interactive prompt, not the file.** Inside `iothub.py`, `from iothub import ...` would make the file import itself.
+
+**The function returns ONE dictionary** with three entries, not a list of dictionaries: each `name=value` piece = one key + one value.
+
+**My first attempt, reviewed:** `split(";")` + `split("=", maxsplit=1)` ✅. To change:
+- an inner `for` over the two halves handles them one at a time; I need them **together**, so use **unpacking**: `name, value = piece.split("=", maxsplit=1)`;
+- `.append()` is for **lists**; a dict gets entries with `parts[name] = value`;
+- create the dict **once, before** the loop (inside, it resets every round);
+- **`return`** it (only printing returns `None`);
+- remove debug prints and the test call: a module only *defines* functions.
+Shape: empty dict → for each piece split at `;` → unpack at the first `=` → store → return.
+
+### C1 review: works, not done yet (16.11.2026)
+Logic ✅. Claude ran it with the fake string → `{'HostName': 'example.azure-devices.net', 'DeviceId': 'bridge-01', 'SharedAccessKey': 'AbC123xyz=='}`: one dict, key still ends in `==`.
+But `ruff check bridge/iothub.py` **fails** (`I001 Import block is un-sorted`, line 1), so a commit would turn **CI red** (`make lint` runs the same check).
+Cleanups:
+1. 🔴 delete `import sys; sys.path.insert(...)` and the commented import (prompt-only test lines);
+2. 🔴 delete the test call at the bottom: top-level code **runs on every import**; a module only *defines* things;
+3. 🟡 delete commented-out debug prints (git remembers old versions);
+4. 🟡 `return x`, not `return(x)` (`return` isn't a function);
+5. 🟡 descriptive name: `pair`/`piece` instead of `i` (`i` = a counting index by convention);
+6. 🟡 module docstring (and optionally a function docstring).
+Check: `ruff check bridge/iothub.py` → `All checks passed!`, re-test in the prompt. Habit: `make lint` before every commit.
+
+
+### C1 done (16.11.2026)
+`ruff check bridge/iothub.py` → All checks passed; the function returns one dict, key ends in `==`. Still to tidy (🟡): `#print(i)`, `return(...)`, name `i`. The docstring should later describe the **module** (it will also hold C2/C3), e.g. "Sends validated readings to Azure IoT Hub over MQTT".
+
+### Piece C2: the SAS token (explained by Claude)
+**Why not send the key?** It would travel on every connection, and one captured connection = the key forever. A **SAS token** is a **time-limited permission slip calculated from the key**; the key never leaves my machine. The hub, which also knows the key, repeats the calculation and compares. A stolen token stops working at expiry.
+
+```
+SharedAccessSignature sr=iot-telemetry-bantos.azure-devices.net%2Fdevices%2Fbridge-01&sig=Xk9...%3D&se=1763312400
+```
+| Part | Means | Made from |
+|---|---|---|
+| `sr=` | **s**igned **r**esource: what it's for | `"{hostname}/devices/{device_id}"`, URL-encoded |
+| `se=` | **s**ignature **e**xpiry: until when | Unix timestamp: now + TTL (e.g. 3600 s) |
+| `sig=` | **sig**nature: the proof | HMAC-SHA256 of resource + expiry with the key → Base64 → URL-encoded |
+
+**Four concepts:**
+1. **Unix timestamp**: seconds since 1 Jan 1970 UTC; "in 1 hour" = `+ 3600`. `int(time.time())`.
+2. **URL encoding**: special characters → safe codes (`/` → `%2F`, `=` → `%3D`). `urllib.parse.quote(text, safe="")`; `safe=""` = encode everything special, **even `/`** (default leaves `/` alone).
+3. **Base64**: raw bytes ↔ plain text. The key is stored *as* Base64 text, so `base64.b64decode(key)` → bytes before use; the signature bytes → `base64.b64encode(...)`. Base64 pads with `=` at the end (why keys end in `=`, question 28).
+4. **HMAC-SHA256**: a **keyed fingerprint**: key + message → fixed 32-byte fingerprint; same inputs = same output; any change = completely different; can't be reversed to the key. `hmac.new(key_bytes, message_bytes, hashlib.sha256).digest()`.
+
+**Recipe:**
+1. `uri = quote(f"{host}/devices/{device_id}", safe="")`
+2. `expiry = int(time.time()) + ttl_seconds` (TTL = time to live)
+3. `string_to_sign = f"{uri}\n{expiry}"` (encoded resource, newline, expiry)
+4. decode the key from Base64 → HMAC-SHA256 the message (`.encode()` to bytes) → `.digest()`
+5. Base64-encode the digest → `.decode()` to str → URL-encode with `safe=""`
+6. `f"SharedAccessSignature sr={uri}&sig={signature}&se={expiry}"`
+
+**Task:** `def generate_sas_token(host: str, device_id: str, key: str, ttl_seconds: int = 3600) -> str:` in `bridge/iothub.py` (`= 3600` = default value). Imports at the top, sorted, under the docstring: `base64`, `hashlib`, `hmac`, `time`, `from urllib.parse import quote`.
+Test with a **fake** key in the prompt → expect `SharedAccessSignature sr=example.azure-devices.net%2Fdevices%2Fbridge-01&sig=...&se=<number>`.
+Compare the **structure** with Azure's: `az iot hub generate-sas-token --hub-name iot-telemetry-bantos --device-id bridge-01 --duration 3600` (sig/se differ; **never paste the real token**: it's a working credential). Real proof: the hub accepts it in C3.
+
+29. Why does a SAS token have an expiry at all, and what happens to the bridge's connection when it expires?
+
+30. What does `safe=""` change in `urllib.parse.quote`, and why is it needed for the `sr=` part?
+
+### How do I put a newline in a Python string? *(17.11.2026)*
+**`\n`**: an **escape sequence** (backslash = "the next character is special"). It's **one** character: `len("a\nb")` → 3. Works in f-strings: `f"{uri}\n{expiry}"`.
+- At the prompt, typing the variable shows the **repr** (`'...\n...'`, newline visible as `\n`); `print(...)` shows it as two lines. Same string.
+- Others: `\t` tab, `\\` a real backslash, `\"` a quote inside `"..."`.
+- For the SAS token it must be exactly `\n`: the hub builds the same string and compares HMAC fingerprints; a space or `\r\n` (Windows line ending) changes the fingerprint, so the token is rejected.
+
+
+### C2 first attempt, reviewed (17.11.2026)
+My function returned `example.azure-devices.net%2Fbridge-01%2FAbC123xyz%3D%3D\n1794944368`, not a token. Problems:
+1. 🔴 **The secret key was inside the token** (`quote_plus(host+"/"+device_id+"/"+key)`). The token travels over the network, so that would send the secret, exactly what SAS avoids. The key is **only** the HMAC's key (step 4), never part of the token.
+2. 🔴 Steps 4–6 missing (no key decoding, HMAC, signature, `SharedAccessSignature sr=...&sig=...&se=...`).
+3. 🔴 Resource needs **`/devices/`**: `host/devices/bridge-01`.
+4. 🟡 `quote_plus` (spaces → `+`, for web forms) → use `quote(text, safe="")`.
+5. 🟡 `datetime.datetime.now()` (ruff `DTZ005`: no time zone) → `int(time.time())` (Unix time is always UTC). Don't name a variable `time`: it hides the `time` module.
+6. 🟡 Test code at the bottom runs on import → test in the prompt. Unpacking `.values()` depends on part order → use `parts["HostName"]`.
+7. 🟡 Ruff: unsorted imports, unused import, missing blank line.
+
+### Building the token step by step with checkpoints
+The expiry changes every second and the signature changes with it, so use a **fixed fake key and expiry** and compare each step with reference values (computed by Claude):
+```python
+import base64, hashlib, hmac
+from urllib.parse import quote
+host = "example.azure-devices.net"
+device_id = "bridge-01"
+key = "ZmFrZS10ZXN0LWtleS0xMjM0NTY="     # Base64 of b"fake-test-key-123456"
+expiry = 1800000000                     # fixed, instead of now + 3600
+```
+| Step | Make | Must equal |
+|---|---|---|
+| 1 | `uri` | `example.azure-devices.net%2Fdevices%2Fbridge-01` |
+| 3 | `string_to_sign` | `'example.azure-devices.net%2Fdevices%2Fbridge-01\n1800000000'` |
+| 4a | key decoded from Base64 | `b'fake-test-key-123456'` |
+| 4b+5a | HMAC digest → Base64 → `.decode()` | `dH+/B/4jCoLE3Rd5zuuKDsi6xUiD0V+uFxOlQZaoktI=` |
+| 5b | URL-encoded | `dH%2B%2FB%2F4jCoLE3Rd5zuuKDsi6xUiD0V%2BuFxOlQZaoktI%3D` |
+| 6 | token | `SharedAccessSignature sr=example.azure-devices.net%2Fdevices%2Fbridge-01&sig=dH%2B%2FB%2F4jCoLE3Rd5zuuKDsi6xUiD0V%2BuFxOlQZaoktI%3D&se=1800000000` |
+`b'...'` = **bytes**, not text; HMAC needs bytes for key and message (`.encode()`, `b64decode`).
+Then move the steps into `generate_sas_token` with `expiry = int(time.time()) + ttl_seconds`, fix imports (ruff), remove the bottom test code. These fixed values also make a good **unit test** later (C4).
+
+
+### C2 again, with a proper introduction (17.11.2026)
+*(The first explanation packed four new concepts into one recipe. This is the step-by-step version, with warm-ups.)*
+
+#### Part 1: the big picture, a wax seal with a secret stamp
+- Bridge and hub each own an **identical secret stamp** (the `SharedAccessKey`).
+- The bridge writes a **note**: "device bridge-01, valid until 15:00", presses the stamp on it → an **imprint**.
+- It sends **note + imprint, never the stamp**. The hub presses its copy on the same note and compares: identical → accepted.
+- A copied note works only until 15:00, and doesn't give anyone the stamp.
+| Wax seal | SAS token |
+|---|---|
+| secret stamp | `SharedAccessKey` |
+| note "bridge-01, valid until 15:00" | **string to sign** (resource + expiry) |
+| pressing the stamp | **HMAC-SHA256** (key = stamp, message = note) |
+| imprint | **signature** |
+| note + imprint sent | **token**: `sr=` (who) + `se=` (until when) + `sig=` (imprint) |
+
+#### Part 2: `str` vs `bytes`
+`str` = text for humans (`"hello"`); `bytes` = raw data for machines (`b"hello"`). Cryptography needs **bytes**. `str` → bytes: `.encode()`; bytes → `str`: `.decode()`.
+```python
+"hi".encode()      # b'hi'
+b"hi".decode()     # 'hi'
+type("hi")         # <class 'str'>
+type(b"hi")        # <class 'bytes'>
+```
+
+#### Part 3: Base64
+Turns any bytes into safe text (letters, digits, `+`, `/`, `=`) and back.
+```python
+import base64
+base64.b64encode(b"hello")              # b'aGVsbG8='   (result is bytes)
+base64.b64decode(b"aGVsbG8=")           # b'hello'
+base64.b64encode(b"hello").decode()     # 'aGVsbG8='   (now a str)
+base64.b64decode("ZmFrZS10ZXN0LWtleS0xMjM0NTY=")   # b'fake-test-key-123456' = the "stamp"
+```
+`=` at the end = padding. The key is *stored* as Base64; the real stamp is the bytes inside, so **decode first**.
+
+#### Part 4: URL encoding
+In the token, `&`, `=`, `/` have meanings; values containing them must be `%`-encoded.
+```python
+from urllib.parse import quote
+quote("a/b c=d", safe="")   # 'a%2Fb%20c%3Dd'
+quote("a/b c=d")            # 'a/b%20c%3Dd'   ← default keeps / unencoded
+```
+`safe=""` = nothing is safe, `/` → `%2F` too (needed for the token). `quote` takes and returns `str`.
+
+#### Part 5: Unix time
+Seconds since 1 Jan 1970 UTC; one number, no time zones.
+```python
+import time
+time.time()               # e.g. 1763379123.84
+int(time.time())          # without decimals
+int(time.time()) + 3600   # one hour from now = the expiry
+```
+
+#### Part 6: HMAC-SHA256, the stamp
+`hmac.new(stamp, note, hashlib.sha256)`; both **bytes**. `.digest()` = imprint as 32 bytes; `.hexdigest()` = same, readable.
+```python
+import hmac, hashlib
+hmac.new(b"secret", b"message", hashlib.sha256).hexdigest()
+# '8b5f48702995c1598c573db1e21866a9b825d4a794d169d7060a03605796360b'
+len(hmac.new(b"secret", b"message", hashlib.sha256).digest())   # 32
+```
+Change one letter of the note (`b"messagf"`) or the stamp (`b"secreT"`): a completely different result. Same inputs: identical result every time (that's how the hub checks).
+
+#### Part 7: how the blocks connect (watch str vs bytes at each step)
+```
+WHO + UNTIL WHEN               THE NOTE                         THE STAMP
+host, device_id, expiry                                          key (Base64 str)
+ 1. "host/devices/device_id" → URL-encode (safe="") → uri (str)       │
+ 3. uri + newline + expiry → string_to_sign (str)                     │
+        │ .encode() → bytes                          4a. b64decode → stamp (bytes)
+        └──────────────────────► 4b. HMAC-SHA256(stamp, note) ◄───────┘
+                                         │ .digest() → imprint (bytes)
+                                 5a. b64encode → bytes, .decode() → str
+                                 5b. URL-encode (safe="") → sig (str)
+ 6. "SharedAccessSignature sr={uri}&sig={sig}&se={expiry}"
+```
+The key is used in **exactly one place**: as the stamp in 4b. The token holds only who, until when and the imprint.
+
+#### The task, with checkpoints (fixed test values; see the table in "Building the token step by step with checkpoints" above)
+If a step doesn't match: check `type(x)` first (bytes vs str), then the warm-up for that part. When all six match, move the steps into `generate_sas_token` with `int(time.time()) + ttl_seconds`, remove the old attempt and the test lines, make ruff pass.
+
+### Why are we generating a SAS token at all? *(17.11.2026)*
+**The bridge must log in to IoT Hub, and the password is the token.**
+| | Mosquitto (home) | IoT Hub (Azure) |
+|---|---|---|
+| Login | none (`allow_anonymous true`) | required: every device proves who it is |
+| Username | — | `<hostname>/bridge-01/?api-version=...` |
+| Password | — | **a SAS token** (not the key, not the connection string) |
+```
+connection string ──parse──► host, device_id, key
+                       generate_sas_token(...) ──► token
+              client.username_pw_set(username=..., password=token)
+              client.connect(host, 8883)    ← logs in with the token   (piece C3)
+```
+- **Normally a library does it:** `azure-iot-device` takes the connection string and generates and renews tokens invisibly. It conflicts with paho-mqtt 2.1, and I chose option 1, so **my code does the library's job**, and I learn how IoT Hub auth works.
+- **Why not `az iot hub generate-sas-token` + paste into `.env`?** It **expires** (manual renewal at 3 a.m.); a year-long token leaked = almost as bad as the key. Generating in code = a **fresh, short-lived token at every connect/reconnect**, automatically.
+- **Design:** the key stays in `.env` as the long-lived secret; the bridge turns it into short-lived tokens when it logs in. Testing generation (C2) before connecting (C3) shows whether a login failure is the token or the connection.
+
+### Does Base64 make data safe / undecryptable? *(18.11.2026)*
+**No.** Base64 is **encoding**, not encryption: anyone can reverse it instantly with no key: `base64.b64decode("ZmFrZS10ZXN0LWtleS0xMjM0NTY=")` → `b'fake-test-key-123456'`.
+| | **Encoding** (Base64, URL encoding) | **Encryption** (AES, TLS) | **Hashing / HMAC** (SHA-256) |
+|---|---|---|---|
+| Purpose | change the **format** | keep data **secret** | **fingerprint** / proof |
+| Reversible? | **yes, by anyone** | only **with the key** | **no**, one-way |
+| Needs a secret? | no | yes | plain hash no; **HMAC yes** |
+| In my project | key stored as Base64; signature → text; `%2F` | **TLS** connection to IoT Hub (8883) | SAS signature |
+- The `SharedAccessKey` in `.env` is **fully secret** despite "looking scrambled": seeing the string = having the key. Never treat Base64 as hiding anything (classic mistake: "Base64 password = encrypted").
+- In the token: **HMAC** (one-way) makes the signature safe to send; Base64 only turns its 32 bytes into text; **TLS** encrypts the whole connection; the **expiry** limits damage if a token leaks.
+- Wax-seal picture: Base64 = the envelope format, HMAC = the seal, TLS = the armoured van.
+
+### C2 second attempt, reviewed (18.11.2026)
+Checked by Claude against an independent reference calculation. **Right now ✅:** the key is **no longer in the token**; `/devices/` included; expiry = now + 3600; the note's content (resource + `\n` + expiry, `.encode()`d); the key Base64-decoded and used as the HMAC key; the overall token shape.
+My token: `SharedAccessSignature sr=b'example.azure-devices.net%2Fdevices%2Fbridge-01\n1795008577'&sig=952da3a8...e1fc&se=1795008577` → **`sr` ✗, `sig` ✗**.
+1. **`sr=` contained the whole note, as bytes.** Clues: `b'...'` = a bytes object's display form pasted into text; `\n1795008577` = the expiry inside `sr`. Cause: one variable used for both. Fix: **two variables**: `uri` (encoded resource, **str**) → `sr=`; `string_to_sign` (uri + newline + expiry, **bytes**) → **only** into the HMAC.
+2. **Signature in hex, not Base64.** `.hexdigest()` gives only `0–9a–f`. Azure wants `.digest()` → Base64 → `.decode()` → URL-encode (`safe=""`, Base64's `+ / =` must be encoded). Hex is fine for *looking*; Base64 for the token.
+Tip: both show up at a specific checkpoint row (step 1 and 4b–5a): build in the prompt with the fixed expiry and compare row by row.
+Cleanup: remove the debug print, commented lines and bottom test lines; `ruff check bridge/iothub.py --fix` sorts imports (read what it changed); use `quote(..., safe="")` and drop `quote_plus`.
+
+### C2 third attempt (18.11.2026)
+**`sr` ✅** (`example.azure-devices.net%2Fdevices%2Fbridge-01`, str, no expiry): splitting `uri` and `note` fixed it. **`sig` ✗**: still `.hexdigest()` (only `0–9a–f`).
+Warm-up for the last step:
+```python
+import hmac, hashlib, base64
+imprint = hmac.new(b"secret", b"message", hashlib.sha256)
+imprint.hexdigest()   # '8b5f4870...'  → str of hex characters (not for Azure)
+imprint.digest()      # b'\x8b_Hp)...' → raw bytes (input for Base64)
+```
+Write one line: `imprint.digest()` → Base64 → `str`. Must give `'i19IcCmVwVmMVz2x4hhmqbgl1KeU0WnXBgoDYFeWNgs='`; then `quote(..., safe="")` (`=` → `%3D`). Same in the function: `.digest()` → Base64 → `.decode()` → `quote(..., safe="")`.
+Also: build `note` **from** `uri` (not by encoding again); cleanup (commented lines, bottom test lines, `quote` instead of `quote_plus`, `ruff check --fix`).
+
+### `digest()` vs `hexdigest()`: what's the difference? *(18.11.2026)*
+**The same imprint, written two ways.** HMAC-SHA256 gives **32 bytes**; a byte = a number 0–255. First 6 for `b"secret"`/`b"message"`: `139, 95, 72, 112, 41, 149`.
+| Method | Writes them as | Type | Length |
+|---|---|---|---|
+| `.digest()` | `b'\x8b_Hp)\x95'` | **bytes** (raw numbers) | 32 bytes |
+| `.hexdigest()` | `'8b5f48702995'` | **str**, each number as 2 hex chars | 64 chars |
+| Base64 of `.digest()` | `'i19IcCmV'` | **str**, packed tighter | 44 chars |
+Same numbers, different notation (like 255 = `ff` = `11111111`).
+- **`b'\x8b_Hp)\x95'`**: Python shows a byte as a character if one fits (95 = `_`, 72 = `H`) or as `\x` + 2 hex digits (139 → `\x8b`). Raw bytes can't go into text as they are.
+- **Hexadecimal** = counting in 16s: `0–9`, `a`=10 … `f`=15; two hex digits = one byte (`00`–`ff`): 139 → `8b`. Readable, handy for comparing.
+- **Why Base64 for the token:** the SAS format requires it; the hub compares Base64 *text*, so hex (same numbers, different text) is rejected.
+- In the function: `.digest()` ✅ → Base64-encode → `.decode()` → `quote(..., safe="")`.
+
+
+### C2 done ✅ (18.11.2026)
+```python
+def generate_sas_token(host, device_id, key, ttl_seconds=3600):
+    expiry = int(time.time()) + ttl_seconds
+    uri = quote(host + "/" + "devices" + "/" + device_id, safe="")
+    note = f"{uri}\n{expiry}"
+    sig = hmac.new(base64.b64decode(key), note.encode(), hashlib.sha256).digest()
+    sig = base64.b64encode(sig)
+    sig = quote(sig.decode(), safe="")
+    return f"SharedAccessSignature sr={uri}&sig={sig}&se={expiry}"
+```
+Claude's check: ruff ✅; `sr` ✅; **`sig` matches an independent reference calculation exactly** ✅; `se` = now + 3600 ✅; key not in token ✅; nothing runs on import ✅.
+
+**Mistakes along the way (lessons):**
+- the key inside the token (the one thing SAS exists to avoid);
+- one variable used for both `sr` and the note → `sr=b'...\n...'` (bytes display form + expiry inside);
+- `.hexdigest()` instead of `.digest()` → Base64 (same numbers, wrong notation for Azure);
+- raw bytes pasted into text → `sig=b'\x..'`;
+- `quote` on the **whole token** → separators `=`/`&` encoded (`%3D`/`%26`) and `%2F` → `%252F` (**double encoding**). Encode only the **values** that need it, so separators keep their meaning;
+- `safe=" "` (keeps spaces) vs `safe=""` (encode everything).
+
+### Why we did all of this (Claude's recap)
+**Goal of 2.2:** get readings from home into Azure.
+**Why a token:** (1) IoT Hub only accepts devices that **prove** who they are (the fix for the playground spoofing); (2) its MQTT login only accepts a **SAS token** as password; (3) Microsoft's library would make it invisibly, but it conflicts with paho-mqtt 2.1, so it became **our** job.
+| Step | Problem it solves |
+|---|---|
+| token instead of key | the key never travels |
+| `sr` resource | which device the token is for |
+| `se` expiry | a stolen token dies after an hour |
+| HMAC with the key | only the key owner can make the imprint; irreversible |
+| Base64 | 32 raw bytes → text |
+| URL encoding | `/ + =` in values don't break `sr=…&sig=…&se=…` |
+The hub repeats the calculation with its copy of the key; matching imprints = proof.
+**The same pattern elsewhere:** webhook signatures (GitHub, Stripe: HMAC-SHA256), AWS Signature Version 4 (every AWS API request), JWT `HS256` tokens.
+**Next (C3):** the token is the password for the TLS connection to IoT Hub; the hub accepting it is the final proof.
+Tasks: commit `bridge/iothub.py`; answer questions 26–30.
